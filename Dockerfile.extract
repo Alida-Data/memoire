@@ -1,0 +1,10 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Installation de kagglehub et autres
+RUN pip install --no-cache-dir fastapi uvicorn kagglehub pandas requests
+
+COPY extract.py /app/extract.py
+
+CMD ["uvicorn", "extract:app", "--host", "0.0.0.0", "--port", "8000"]

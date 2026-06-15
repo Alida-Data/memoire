@@ -1,0 +1,10 @@
+pandas
+requests
+psycopg2-binary
+sqlalchemy
+fastapi
+uvicorn
+scikit-learn
+mlflow
+apache-airflow
+apache-airflow-providers-http
