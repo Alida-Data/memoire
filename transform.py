@@ -3,6 +3,7 @@ import hashlib
 import pandas as pd
 import mlflow
 import mlflow.sklearn
+import traceback
 from fastapi import FastAPI, HTTPException
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -23,10 +24,27 @@ class DataTransformer:
     def clean_chunk(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df = df.drop_duplicates()
-        if 'Is Fraud' in df.columns:
-            df = df.dropna(subset=['Is Fraud'])
-        if 'Credit Card Number' in df.columns:
-            df['Credit Card Number'] = df['Credit Card Number'].apply(self._anonymize_card)
+        
+        # 💡 Correction ici : 'is_fraud' au lieu de 'Is Fraud'
+        if 'is_fraud' in df.columns:
+            df = df.dropna(subset=['is_fraud'])
+            def convert_fraud_val(val):
+                if pd.isnull(val):
+                    return None
+                v_str = str(val).strip().lower()
+                if v_str in ['yes', '1', '1.0', 'true']:
+                    return 1
+                if v_str in ['no', '0', '0.0', 'false']:
+                    return 0
+                return None
+            df['is_fraud'] = df['is_fraud'].apply(convert_fraud_val)
+            df = df.dropna(subset=['is_fraud'])
+            if not df.empty:
+                df['is_fraud'] = df['is_fraud'].astype(int)
+                
+        # 💡 Correction ici : 'card_number' au lieu de 'Credit Card Number'
+        if 'card_number' in df.columns:
+            df['card_number'] = df['card_number'].apply(self._anonymize_card)
         return df
 
     def run_pipeline(self) -> str:
@@ -45,25 +63,30 @@ class DataTransformer:
         return self.cleaned_path
 
 class ModelTrainer:
-    def __init__(self, data_path: str, target: str = "Is Fraud"):
+    # 💡 Correction ici : cible par défaut fixée à 'is_fraud'
+    def __init__(self, data_path: str, target: str = "is_fraud"):
         self.data_path = data_path
         self.target = target
         self.model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
 
     def train(self):
-        # Échantillon pour validation rapide (Mémoire MIAGE)
         df = pd.read_csv(self.data_path, nrows=20000)
         
-        # Uniquement les variables numériques pour Random Forest basique
+        if self.target not in df.columns:
+            raise KeyError(f"La colonne cible '{self.target}' est absente du fichier nettoyé.")
+        
+        # Enlever les colonnes non numériques + la cible pour l'entraînement
         X = df.select_dtypes(include=['number']).drop(columns=[self.target], errors='ignore')
-        y = df[self.target]
+        y = df[self.target].astype(int)
+        
+        if X.empty:
+            raise ValueError("Le dataset X ne contient aucune colonne numérique exploitable pour l'entraînement.")
         
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
         self.model.fit(X_train, y_train)
         return accuracy_score(y_test, self.model.predict(X_test))
 
     def log_mlflow(self):
-        # Utilisation directe de l'URI du conteneur réseau Docker
         tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment("Fraud_Detection_Architecture")
@@ -90,6 +113,8 @@ def run_all():
         
         return {"status": "success", "message": "Pipeline complet (Anonymisation + MLflow) exécuté avec succès."}
     except Exception as e:
+        print("💥 CRASH DU PIPELINE (DÉTAIL PYTHON) :")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
