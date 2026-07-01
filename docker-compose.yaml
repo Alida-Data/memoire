@@ -27,33 +27,24 @@ services:
   # 
   
   #  MLflow Server : Version corrigée avec variables d'environnement Gunicorn
-  
+  # 🚀 MLflow Server : Configuration standard et stable
   mlflow_server:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow_server_memoire
-    # Plus besoin d'exposer le port 5000 au monde entier, seul le proxy lui parlera
     environment:
       - MLFLOW_HTTP_PROXY_ALLOW_ALL=True
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///tmp/mlflow.db --default-artifact-root /tmp/mlflow_artifacts
     networks:
       - pipeline_network
 
-  # 🛡️ MLflow Proxy (Nginx) : Le sauveur qui réécrit les en-têtes Host
+  # 🛡️ MLflow Proxy (Nginx) : La version finale par montage de fichier (sans crash Windows)
   mlflow_proxy:
     image: nginx:alpine
     container_name: mlflow_proxy_memoire
     ports:
-      - "5000:5000"  # C'est lui qui prend le relais sur le port 5000 pour ton navigateur et tes scripts
-    entrypoint: >
-      /bin/sh -c '
-      echo "server {
-          listen 5000;
-          location / {
-              proxy_pass http://mlflow_server:5000;
-              proxy_set_header Host localhost:5000;
-              proxy_set_header X-Real-IP \$remote_addr;
-          }
-      }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+      - "5000:5000"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - mlflow_server
     networks:

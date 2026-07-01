@@ -22,12 +22,24 @@ class DataTransformer:
         return None
 
     def clean_chunk(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Nettoie et transforme un bloc de données (chunk).
+        Applique la déduplication ciblée, le transtypage et l'anonymisation.
+        """
+        # 1. Copie pour éviter les avertissements SettingWithCopyWarning
         df = df.copy()
-        df = df.drop_duplicates()
         
-        # 💡 Correction ici : 'is_fraud' au lieu de 'Is Fraud'
+        # 2. Suppression des doublons techniques (Élimination des 6 460 scories)
+        # On cible 'transaction_id' pour garantir l'unicité stricte de la clé primaire
+        if 'transaction_id' in df.columns:
+            df = df.drop_duplicates(subset=['transaction_id'], keep='first')
+        else:
+            df = df.drop_duplicates()
+            
+        # 3. Nettoyage et normalisation de la variable cible 'is_fraud'
         if 'is_fraud' in df.columns:
             df = df.dropna(subset=['is_fraud'])
+            
             def convert_fraud_val(val):
                 if pd.isnull(val):
                     return None
@@ -37,14 +49,16 @@ class DataTransformer:
                 if v_str in ['no', '0', '0.0', 'false']:
                     return 0
                 return None
+                
             df['is_fraud'] = df['is_fraud'].apply(convert_fraud_val)
             df = df.dropna(subset=['is_fraud'])
             if not df.empty:
                 df['is_fraud'] = df['is_fraud'].astype(int)
                 
-        # 💡 Correction ici : 'card_number' au lieu de 'Credit Card Number'
+        # 4. Sécurisation et Anonymisation Cryptographique (SHA-256)
         if 'card_number' in df.columns:
             df['card_number'] = df['card_number'].apply(self._anonymize_card)
+            
         return df
 
     def run_pipeline(self) -> str:
@@ -63,7 +77,6 @@ class DataTransformer:
         return self.cleaned_path
 
 class ModelTrainer:
-    # 💡 Correction ici : cible par défaut fixée à 'is_fraud'
     def __init__(self, data_path: str, target: str = "is_fraud"):
         self.data_path = data_path
         self.target = target
@@ -113,7 +126,7 @@ def run_all():
         
         return {"status": "success", "message": "Pipeline complet (Anonymisation + MLflow) exécuté avec succès."}
     except Exception as e:
-        print("💥 CRASH DU PIPELINE (DÉTAIL PYTHON) :")
+        print(" CRASH DU PIPELINE (DÉTAIL PYTHON) :")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

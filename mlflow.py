@@ -84,7 +84,7 @@ class Pipeline:
         )
 
     def run(self):
-        # 🟢 OPTIMISATION TEMPORELLE : Ajout d'un LIMIT pour valider la mécanique Airflow instantanément
+        # OPTIMISATION TEMPORELLE : Ajout d'un LIMIT pour valider la mécanique Airflow instantanément
         # Tu retireras le "LIMIT 20000" uniquement pour les exécutions finales de ton mémoire !
         query = "SELECT * FROM public.bank_transactions LIMIT 20000;"
         df = self.db.read_table(query)

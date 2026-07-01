@@ -17,6 +17,7 @@ with DAG(
 ) as dag:
 
     # 1. Appel au Microservice d'Extraction
+    # Ajout d'extra_options pour désactiver le timeout de lecture sur les 790 Mo
     task_extract = SimpleHttpOperator(
         task_id='appel_microservice_extract',
         http_conn_id='http_extract',
@@ -24,10 +25,12 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
+        extra_options={"timeout": (60, None)}, 
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 2. Appel au Microservice de Transformation (Appelle le code FastAPI)
+    # 2. Appel au Microservice de Transformation & Entraînement (Code FastAPI + MLflow)
+    # Sécurisation du timeout également sous forme de tuple pour l'entraînement de l'IA
     task_transform = SimpleHttpOperator(
         task_id='appel_microservice_transform',
         http_conn_id='http_transform',
@@ -35,7 +38,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": 3600}, # Évite le timeout pendant l'entraînement du Random Forest
+        extra_options={"timeout": (60, None)}, 
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -50,5 +53,5 @@ with DAG(
         response_check=lambda response: response.status_code == 200,
     )
 
-    # Enchaînement séquentiel du pipeline
+    # Enchaînement séquentiel du pipeline ETL / MLOps
     task_extract >> task_transform >> task_load
