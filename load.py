@@ -32,8 +32,12 @@ class PostgresLoader:
         """Méthode interne pour mapper dynamiquement les types de colonnes du CSV nettoyé."""
         schema = []
         for col in first_row_df.columns:
-            # Adaptation aux colonnes nettoyées issues de la transformation
-            if col in ['amount', 'montant_brut', 'montant_transforme']:
+            # 1. Protection et typage de la clé primaire pour bloquer les doublons du CSV
+            if col == 'transaction_id':
+                schema.append(f'"{col}" VARCHAR(255) PRIMARY KEY')
+                
+            # 2. Adaptation aux colonnes nettoyées issues de la transformation
+            elif col in ['amount', 'montant_brut', 'montant_transforme']:
                 schema.append(f'"{col}" FLOAT')
             elif col in ['is_fraud', 'heure_transaction', 'jour_semaine']:
                 schema.append(f'"{col}" INT')
@@ -55,21 +59,24 @@ class PostgresLoader:
         create_query = f"CREATE TABLE {self.table_name} ({', '.join(schema)});"
         self.cursor.execute(create_query)
         self.conn.commit()
-        print(f"[INFO] Table {self.table_name} recréée avec succès.")
+        print(f"[INFO] Table {self.table_name} recréée avec succès (Clé Primaire activée).")
 
     def insert_data_by_chunks(self, file_path: str, chunk_size: int = 50000):
-        """Lit le fichier CSV par paquets et injecte les données massivement via execute_values."""
+        """Lit le fichier CSV par paquets et injecte les données en ignorant les doublons."""
         print(f"[INFO] Insertion massive des lignes par paquets de {chunk_size}...")
         
         for chunk in pd.read_csv(file_path, chunksize=chunk_size):
-            # Remplacement des valeurs NaN par None pour PostgreSQL
             chunk = chunk.where(pd.notnull(chunk), None)
             
-            # Protection des colonnes contenant des espaces ou des caractères spéciaux
             protected_cols = ",".join([f'"{c}"' for c in chunk.columns])
-            query = f"INSERT INTO {self.table_name} ({protected_cols}) VALUES %s"
             
-            # Transformation en liste de tuples et insertion
+            # Utilisation de ON CONFLICT DO NOTHING pour ignorer silencieusement les doublons du CSV
+            query = f"""
+                INSERT INTO {self.table_name} ({protected_cols}) 
+                VALUES %s 
+                ON CONFLICT (transaction_id) DO NOTHING;
+            """
+            
             tuples_list = [tuple(x) for x in chunk.to_numpy()]
             extras.execute_values(self.cursor, query, tuples_list)
             self.conn.commit()
@@ -104,7 +111,6 @@ DATABASE_URL = os.getenv(
 )
 CLEAN_DATA_PATH = os.getenv("CLEAN_DATA_PATH", "/data/cleaned_data.csv")
 
-# 🟢 Redirection vers la table "bank_transactions_cleaned" pour isoler les données propres
 db_loader = PostgresLoader(
     db_url=DATABASE_URL,
     table_name="public.bank_transactions_cleaned"
@@ -116,7 +122,7 @@ def load():
         db_loader.run_pipeline(file_path=CLEAN_DATA_PATH, chunk_size=50000)
         return {
             "status": "success", 
-            "message": "Les données nettoyées et anonymisées ont été injectées avec succès dans public.bank_transactions_cleaned !"
+            "message": "Les données nettoyées et dédupliquées ont été injectées avec succès !"
         }
     except FileNotFoundError as fnf_e:
         raise HTTPException(status_code=404, detail=str(fnf_e))

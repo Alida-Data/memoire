@@ -3,8 +3,8 @@ import pandas as pd
 import psycopg2
 from sqlalchemy import create_engine
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from xgboost import XGBClassifier  
+from sklearn.metrics import f1_score, accuracy_score
 import mlflow
 import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
@@ -36,13 +36,22 @@ class DatabaseManager:
         return pd.read_sql(query, self.engine)
 
 # =====================================================================
-# CLASSE: Entraîneur de Modèle
+# CLASSE: Entraîneur de Modèle (Ajusté avec ton tracking MLflow)
 # =====================================================================
 class ModelTrainer:
     def __init__(self, dataframe, target="Is Fraud"):
         self.dataframe = dataframe
         self.target = target
-        self.model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+        
+        # Définition exacte de tes hyperparamètres
+        self.params = {
+            "n_estimators": 100,
+            "max_depth": 6,
+            "learning_rate": 0.1,
+            "random_state": 42
+        }
+        # Initialisation du modèle avec les hyperparamètres
+        self.model = XGBClassifier(**self.params)
 
     def prepare_data(self):
         # Exclusion des colonnes non-numériques pour la modélisation
@@ -50,25 +59,43 @@ class ModelTrainer:
         y = self.dataframe[self.target]
         return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    def train(self):
-        X_train, X_test, y_train, y_test = self.prepare_data()
-        self.model.fit(X_train, y_train)
-        preds = self.model.predict(X_test)
-        return accuracy_score(y_test, preds)
-
     def log_mlflow(self):
-        #  CORRECTION EXTRÊME : Passage par la passerelle de l'hôte physique (Zéro déconnexion)
+        # Configuration de la passerelle Docker et de l'expérience
         tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://host.docker.internal:5000")
         mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment("Fraud_Detection_Architecture")
+        mlflow.set_experiment("Detection_Fraude_Financial")
 
-        with mlflow.start_run():
-            acc = self.train()
-            mlflow.log_param("n_estimators", self.model.n_estimators)
-            mlflow.log_param("max_depth", self.model.max_depth)
-            mlflow.log_metric("accuracy", acc)
-            mlflow.sklearn.log_model(self.model, "fraud_rf_model")
-            print(f"[SUCCESS] Modèle enregistré dans MLflow via Host Gateway. Accuracy: {acc}")
+        X_train, X_test, y_train, y_test = self.prepare_data()
+
+        # Démarrage du tracking MLflow avec ton run_name
+        with mlflow.start_run(run_name="Entrainement_XGBoost_Initial"):
+            
+            # Log de ton dictionnaire d'hyperparamètres
+            mlflow.log_params(self.params)
+            
+            # Entraînement du modèle
+            self.model.fit(X_train, y_train)
+            
+            # Prédictions et évaluation
+            y_pred = self.model.predict(X_test)
+            f1 = f1_score(y_test, y_pred, average='macro')
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Log de tes métriques de performance
+            mlflow.log_metric("f1_score", f1)
+            mlflow.log_metric("accuracy", accuracy)
+            
+            # Ajout de ton tag personnalisé
+            mlflow.set_tag("Statut", "Prototype")
+            
+            # Sauvegarde et enregistrement dans le registre de modèles MLflow
+            mlflow.sklearn.log_model(
+                sk_model=self.model, 
+                artifact_path="model_fraude",
+                registered_model_name="XGBoost_Fraude_Model"
+            )
+
+            print(f"[SUCCESS] Entraînement terminé. F1-Score: {f1:.4f}. Run loggé avec succès dans MLflow !")
 
 # =====================================================================
 # CLASSE: Orchestrateur (Pipeline)
@@ -84,8 +111,7 @@ class Pipeline:
         )
 
     def run(self):
-        # OPTIMISATION TEMPORELLE : Ajout d'un LIMIT pour valider la mécanique Airflow instantanément
-        # Tu retireras le "LIMIT 20000" uniquement pour les exécutions finales de ton mémoire !
+        # Clause LIMIT à enlever uniquement pour le traitement de ton volume final
         query = "SELECT * FROM public.bank_transactions LIMIT 20000;"
         df = self.db.read_table(query)
         
@@ -102,7 +128,7 @@ def train_model():
     try:
         pipeline = Pipeline()
         pipeline.run()
-        return {"status": "success", "message": "Entraînement et tracking MLflow terminés avec succès."}
+        return {"status": "success", "message": "Entraînement XGBoost et tracking MLflow terminés avec succès."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
