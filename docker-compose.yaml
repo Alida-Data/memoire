@@ -118,9 +118,12 @@ services:
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/memoire
+      # Ajout des variables de secours pour brider la consommation de RAM :
+      - AIRFLOW__WEBSERVER__WORKERS=1
+      - AIRFLOW__SCHEDULER__PARALLELISM=2
+      - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
-
   # Orchestrateur Airflow - Interface Web
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.10
@@ -168,6 +171,9 @@ services:
       - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
       - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform-service:8000
       - AIRFLOW_CONN_HTTP_LOAD=http://load-service:8000
+      - AIRFLOW__WEBSERVER__WORKERS=1
+      - AIRFLOW__SCHEDULER__PARALLELISM=2
+      - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
 
