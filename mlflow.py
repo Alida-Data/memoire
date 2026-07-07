@@ -27,7 +27,7 @@ class DatabaseManager:
         try:
             url = f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
             self.engine = create_engine(url)
-            print("[INFO] Connexion SQLAlchemy établie.")
+            print("[INFO] Connexion SQLAlchemy établie avec PostgreSQL.")
         except Exception as e:
             print(f"[ERROR] Erreur connexion : {e}")
             raise
@@ -37,75 +37,68 @@ class DatabaseManager:
         return pd.read_sql(query, self.engine)
 
 # =====================================================================
-# CLASSE: Entraîneur de Modèle (Optimisé et Fusionné avec les Graphiques)
+# CLASSE: Entraîneur de Modèle (Optimisé avec scale_pos_weight & features réelles)
 # =====================================================================
 class ModelTrainer:
-    def __init__(self, dataframe, target="Is Fraud"):
+    def __init__(self, dataframe, target="is_fraud"):
         self.dataframe = dataframe
         self.target = target
         
-        # Calcul du ratio pour scale_pos_weight afin de gérer le déséquilibre
+        # Calcul du ratio exact pour scale_pos_weight (Gestion du déséquilibre ~80/20)
         nb_neg = (self.dataframe[self.target] == 0).sum()
         nb_pos = (self.dataframe[self.target] == 1).sum()
-        # Sécurité si aucune fraude dans l'échantillon initial
         ratio = (nb_neg / nb_pos) if nb_pos > 0 else 1.0
 
-        # Définition de tes hyperparamètres avec ajustement pour la fraude
+        # Configuration des hyperparamètres XGBoost pour maximiser le F1-Score
         self.params = {
-            "n_estimators": 150,           # Augmenté légèrement pour la stabilité
+            "n_estimators": 150,
             "max_depth": 6,
             "learning_rate": 0.1,
-            "scale_pos_weight": ratio,     # Gère le déséquilibre pour s'approcher des 95%
+            "scale_pos_weight": ratio,     # Équilibrage natif des classes
             "random_state": 42
         }
-        # Initialisation du modèle avec les hyperparamètres
         self.model = XGBClassifier(**self.params)
 
     def prepare_data(self):
-        # Exclusion des colonnes non-numériques pour la modélisation
+        # Conversion explicite en types numériques si nécessaire et exclusion de la cible
         X = self.dataframe.select_dtypes(include=['number']).drop(columns=[self.target], errors='ignore')
-        y = self.dataframe[self.target]
+        y = self.dataframe[self.target].astype(int)
         return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
     def log_mlflow(self):
-        # Configuration de la passerelle Docker et de l'expérience
         tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://host.docker.internal:5000")
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment("Detection_Fraude_Financial")
 
         X_train, X_test, y_train, y_test = self.prepare_data()
 
-        # Démarrage du tracking MLflow avec ton run_name
-        with mlflow.start_run(run_name="Entrainement_XGBoost_Optimise"):
-            
-            # Log de ton dictionnaire d'hyperparamètres
+        with mlflow.start_run(run_name="Entrainement_XGBoost_Final_Cleaned"):
+            # Logging des hyperparamètres
             mlflow.log_params(self.params)
             
-            # Entraînement du modèle
+            # Entraînement de l'algorithme
             self.model.fit(X_train, y_train)
             
-            # Prédictions et évaluation
+            # Calcul des prédictions et des probabilités
             y_pred = self.model.predict(X_test)
-            y_pred_proba = self.model.predict_proba(X_test)[:, 1] # Requis pour la courbe ROC
+            y_pred_proba = self.model.predict_proba(X_test)[:, 1]
             
+            # Évaluation des KPI requis pour le mémoire
             f1 = f1_score(y_test, y_pred, average='macro')
             accuracy = accuracy_score(y_test, y_pred)
             
-            # Log de tes métriques de performance
             mlflow.log_metric("f1_score", f1)
             mlflow.log_metric("accuracy", accuracy)
+            mlflow.set_tag("Statut", "Pipeline_Production_Valide")
             
-            # Ajout de ton tag personnalisé
-            mlflow.set_tag("Statut", "Optimisation_RAM_Geree")
-            
-            # --- FUSION : GÉNÉRATION ET LOG DES ARTEFACTS GRAPHIQUES ---
+            # --- GÉNÉRATION ET LOG DES VISUELS DE HAUTE QUALITÉ ---
             try:
                 # 1. Matrice de Confusion
                 plt.figure(figsize=(6, 6))
                 cm = confusion_matrix(y_test, y_pred)
                 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Fraude'])
                 disp.plot(cmap='Blues')
-                plt.title("Matrice de Confusion - Détection de Fraude")
+                plt.title("Matrice de Confusion - Pipeline Nettoyé")
                 plt.savefig("confusion_matrix.png", bbox_inches='tight')
                 mlflow.log_artifact("confusion_matrix.png")
                 plt.close()
@@ -118,23 +111,23 @@ class ModelTrainer:
                 plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
                 plt.xlabel("Taux de Faux Positifs (FPR)")
                 plt.ylabel("Taux de Vrais Positifs (TPR)")
-                plt.title("Courbe ROC")
+                plt.title("Courbe ROC - Modèle XGBoost")
                 plt.legend(loc="lower right")
                 plt.savefig("roc_curve.png", bbox_inches='tight')
                 mlflow.log_artifact("roc_curve.png")
                 plt.close()
-                print("[INFO] Graphiques sauvegardés et envoyés avec succès sur MLflow.")
+                print("[INFO] Graphiques analytiques stockés avec succès dans MLflow.")
             except Exception as graph_err:
-                print(f"[WARNING] Échec de la génération des graphiques : {graph_err}")
+                print(f"[WARNING] Erreur génération des artefacts : {graph_err}")
 
-            # Sauvegarde et enregistrement dans le registre de modèles MLflow
+            # Enregistrement du modèle dans le registre MLOps
             mlflow.sklearn.log_model(
                 sk_model=self.model, 
                 artifact_path="model_fraude",
                 registered_model_name="XGBoost_Fraude_Model"
             )
 
-            print(f"[SUCCESS] Entraînement terminé. Accuracy: {accuracy:.4f}. Run loggé avec succès dans MLflow !")
+            print(f"[SUCCESS] Modèle entraîné. F1-Score: {f1:.4f} | Accuracy: {accuracy:.4f}")
 
 # =====================================================================
 # CLASSE: Orchestrateur (Pipeline)
@@ -150,11 +143,27 @@ class Pipeline:
         )
 
     def run(self):
-        # Clause LIMIT à ajuster selon les capacités de ta RAM en local
-        query = "SELECT * FROM public.bank_transactions LIMIT 20000;"
+        # Requête SQL utilisant le schéma d'ingestion réel extrait de DBeaver
+        # Extraction de variables à fort pouvoir discriminant
+        query = """
+            SELECT 
+                amount, 
+                high_risk_merchant, 
+                transaction_hour, 
+                weekend_transaction, 
+                velocity_last_hour, 
+                is_fraud 
+            FROM public.bank_transactions_cleaned 
+            LIMIT 150000;
+        """
         df = self.db.read_table(query)
         
-        trainer = ModelTrainer(df, target="Is Fraud")
+        # Nettoyage à la volée des types natifs si PostgreSQL renvoie du texte
+        for col in ['high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                
+        trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
 
 # =====================================================================
@@ -167,7 +176,7 @@ def train_model():
     try:
         pipeline = Pipeline()
         pipeline.run()
-        return {"status": "success", "message": "Entraînement XGBoost (Optimisé) et artifacts générés avec succès."}
+        return {"status": "success", "message": "Entraînement exécuté avec succès sur les colonnes réelles de bank_transactions_cleaned."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
