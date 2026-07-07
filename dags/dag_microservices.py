@@ -16,7 +16,7 @@ with DAG(
     tags=['fraude', 'miage', 'ppda'],
 ) as dag:
 
-    # 1. Appel au Microservice d'Extraction
+    # 1. Extraction
     task_extract = SimpleHttpOperator(
         task_id='appel_microservice_extract',
         http_conn_id='http_extract',
@@ -28,11 +28,11 @@ with DAG(
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 2. Appel au Microservice de Transformation
+    # 2. Transformation des données brutes
     task_transform = SimpleHttpOperator(
         task_id='appel_microservice_transform',
         http_conn_id='http_transform',
-        endpoint='run', # Modifié si ton microservice de transformation de données a un endpoint 'run'
+        endpoint='run', # Appelle l'endpoint de base du transform-service
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
@@ -40,7 +40,7 @@ with DAG(
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 3. Appel au Microservice de Chargement (Ingestion vers Postgres)
+    # 3. Chargement vers PostgreSQL
     task_load = SimpleHttpOperator(
         task_id='appel_microservice_load',
         http_conn_id='http_load',
@@ -48,21 +48,21 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)}, # Sécurité timeout ajoutée vu les 30 min de traitement
+        extra_options={"timeout": (60, None)},
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 4. Fin de chaîne : Appel au Microservice de Modélisation IA (XGBoost + MLflow)
+    # 4. Modélisation et Tracking MLOps (XGBoost + MLflow)
     task_train = SimpleHttpOperator(
         task_id='appel_microservice_train',
-        http_conn_id='http_transform', # Pointe sur le microservice de modélisation
-        endpoint='run-pipeline',       # Ton endpoint d'entraînement XGBoost
+        http_conn_id='http_transform', # Même connexion car c'est le même conteneur
+        endpoint='run-pipeline',       # Ton point d'accès pour XGBoost
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)}, # Laisse le temps au modèle de converger (150k lignes)
+        extra_options={"timeout": (60, None)}, 
         response_check=lambda response: response.status_code == 200,
     )
 
-    # Enchaînement séquentiel optimal de l'ingestion jusqu'au tracking MLOps
+    # Enchaînement optimal de bout en bout
     task_extract >> task_transform >> task_load >> task_train
