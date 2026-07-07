@@ -127,6 +127,7 @@ services:
       - pipeline_network
   # Orchestrateur Airflow - Interface Web
   # Orchestrateur Airflow - Interface Web
+  # Orchestrateur Airflow - Interface Web
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.10
     container_name: airflow_webserver_memoire
@@ -148,7 +149,6 @@ services:
       - _AIRFLOW_WWW_USER_LASTNAME=MIAGE
       - _AIRFLOW_WWW_USER_EMAIL=alida@example.com
       - _AIRFLOW_WWW_USER_ROLE=Admin
-      # Connexions HTTP corrigées avec les container_names réels
       - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
       - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform-service:8000
       - AIRFLOW_CONN_HTTP_LOAD=http://load-service:8000
@@ -170,8 +170,7 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/memoire
       - AIRFLOW__WEBSERVER__SECRET_KEY=cle_secrete_pour_le_memoire_miage_12345
-      # Connexions HTTP corrigées avec les container_names réels
-      - - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
+      - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
       - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform-service:8000
       - AIRFLOW_CONN_HTTP_LOAD=http://load-service:8000
       - AIRFLOW__WEBSERVER__WORKERS=1
@@ -179,7 +178,6 @@ services:
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
-
 volumes:
   postgres_data_v5:
   shared_data:
