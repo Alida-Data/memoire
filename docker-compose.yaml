@@ -149,9 +149,9 @@ services:
       - _AIRFLOW_WWW_USER_EMAIL=alida@example.com
       - _AIRFLOW_WWW_USER_ROLE=Admin
       # Connexions HTTP corrigées avec les container_names réels
-      - AIRFLOW_CONN_HTTP_EXTRACT=http://extract_microservice:8000
-      - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform_microservice:8000
-      - AIRFLOW_CONN_HTTP_LOAD=http://load_microservice:8000
+      - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
+      - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform-service:8000
+      - AIRFLOW_CONN_HTTP_LOAD=http://load-service:8000
     networks:
       - pipeline_network
 
@@ -171,9 +171,9 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/memoire
       - AIRFLOW__WEBSERVER__SECRET_KEY=cle_secrete_pour_le_memoire_miage_12345
       # Connexions HTTP corrigées avec les container_names réels
-      - AIRFLOW_CONN_HTTP_EXTRACT=http://extract_microservice:8000
-      - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform_microservice:8000
-      - AIRFLOW_CONN_HTTP_LOAD=http://load_microservice:8000
+      - - AIRFLOW_CONN_HTTP_EXTRACT=http://extract-service:8000
+      - AIRFLOW_CONN_HTTP_TRANSFORM=http://transform-service:8000
+      - AIRFLOW_CONN_HTTP_LOAD=http://load-service:8000
       - AIRFLOW__WEBSERVER__WORKERS=1
       - AIRFLOW__SCHEDULER__PARALLELISM=2
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
