@@ -4,7 +4,8 @@ import psycopg2
 from sqlalchemy import create_engine
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier  
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
+import matplotlib.pyplot as plt
 import mlflow
 import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
@@ -36,18 +37,25 @@ class DatabaseManager:
         return pd.read_sql(query, self.engine)
 
 # =====================================================================
-# CLASSE: Entraîneur de Modèle (Ajusté avec ton tracking MLflow)
+# CLASSE: Entraîneur de Modèle (Optimisé et Fusionné avec les Graphiques)
 # =====================================================================
 class ModelTrainer:
     def __init__(self, dataframe, target="Is Fraud"):
         self.dataframe = dataframe
         self.target = target
         
-        # Définition exacte de tes hyperparamètres
+        # Calcul du ratio pour scale_pos_weight afin de gérer le déséquilibre
+        nb_neg = (self.dataframe[self.target] == 0).sum()
+        nb_pos = (self.dataframe[self.target] == 1).sum()
+        # Sécurité si aucune fraude dans l'échantillon initial
+        ratio = (nb_neg / nb_pos) if nb_pos > 0 else 1.0
+
+        # Définition de tes hyperparamètres avec ajustement pour la fraude
         self.params = {
-            "n_estimators": 100,
+            "n_estimators": 150,           # Augmenté légèrement pour la stabilité
             "max_depth": 6,
             "learning_rate": 0.1,
+            "scale_pos_weight": ratio,     # Gère le déséquilibre pour s'approcher des 95%
             "random_state": 42
         }
         # Initialisation du modèle avec les hyperparamètres
@@ -68,7 +76,7 @@ class ModelTrainer:
         X_train, X_test, y_train, y_test = self.prepare_data()
 
         # Démarrage du tracking MLflow avec ton run_name
-        with mlflow.start_run(run_name="Entrainement_XGBoost_Initial"):
+        with mlflow.start_run(run_name="Entrainement_XGBoost_Optimise"):
             
             # Log de ton dictionnaire d'hyperparamètres
             mlflow.log_params(self.params)
@@ -78,6 +86,8 @@ class ModelTrainer:
             
             # Prédictions et évaluation
             y_pred = self.model.predict(X_test)
+            y_pred_proba = self.model.predict_proba(X_test)[:, 1] # Requis pour la courbe ROC
+            
             f1 = f1_score(y_test, y_pred, average='macro')
             accuracy = accuracy_score(y_test, y_pred)
             
@@ -86,8 +96,37 @@ class ModelTrainer:
             mlflow.log_metric("accuracy", accuracy)
             
             # Ajout de ton tag personnalisé
-            mlflow.set_tag("Statut", "Prototype")
+            mlflow.set_tag("Statut", "Optimisation_RAM_Geree")
             
+            # --- FUSION : GÉNÉRATION ET LOG DES ARTEFACTS GRAPHIQUES ---
+            try:
+                # 1. Matrice de Confusion
+                plt.figure(figsize=(6, 6))
+                cm = confusion_matrix(y_test, y_pred)
+                disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Fraude'])
+                disp.plot(cmap='Blues')
+                plt.title("Matrice de Confusion - Détection de Fraude")
+                plt.savefig("confusion_matrix.png", bbox_inches='tight')
+                mlflow.log_artifact("confusion_matrix.png")
+                plt.close()
+
+                # 2. Courbe ROC
+                plt.figure(figsize=(6, 6))
+                fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+                roc_auc = auc(fpr, tpr)
+                plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+                plt.xlabel("Taux de Faux Positifs (FPR)")
+                plt.ylabel("Taux de Vrais Positifs (TPR)")
+                plt.title("Courbe ROC")
+                plt.legend(loc="lower right")
+                plt.savefig("roc_curve.png", bbox_inches='tight')
+                mlflow.log_artifact("roc_curve.png")
+                plt.close()
+                print("[INFO] Graphiques sauvegardés et envoyés avec succès sur MLflow.")
+            except Exception as graph_err:
+                print(f"[WARNING] Échec de la génération des graphiques : {graph_err}")
+
             # Sauvegarde et enregistrement dans le registre de modèles MLflow
             mlflow.sklearn.log_model(
                 sk_model=self.model, 
@@ -95,7 +134,7 @@ class ModelTrainer:
                 registered_model_name="XGBoost_Fraude_Model"
             )
 
-            print(f"[SUCCESS] Entraînement terminé. F1-Score: {f1:.4f}. Run loggé avec succès dans MLflow !")
+            print(f"[SUCCESS] Entraînement terminé. Accuracy: {accuracy:.4f}. Run loggé avec succès dans MLflow !")
 
 # =====================================================================
 # CLASSE: Orchestrateur (Pipeline)
@@ -111,7 +150,7 @@ class Pipeline:
         )
 
     def run(self):
-        # Clause LIMIT à enlever uniquement pour le traitement de ton volume final
+        # Clause LIMIT à ajuster selon les capacités de ta RAM en local
         query = "SELECT * FROM public.bank_transactions LIMIT 20000;"
         df = self.db.read_table(query)
         
@@ -128,7 +167,7 @@ def train_model():
     try:
         pipeline = Pipeline()
         pipeline.run()
-        return {"status": "success", "message": "Entraînement XGBoost et tracking MLflow terminés avec succès."}
+        return {"status": "success", "message": "Entraînement XGBoost (Optimisé) et artifacts générés avec succès."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
