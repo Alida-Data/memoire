@@ -8,3 +8,5 @@ scikit-learn
 mlflow
 apache-airflow
 apache-airflow-providers-http
+psycopg2-binary
+xgboost
