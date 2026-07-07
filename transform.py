@@ -1,7 +1,7 @@
 import os
 import hashlib
 import pandas as pd
-import mlflow
+import pipeline_ml
 import mlflow.sklearn
 import traceback
 from fastapi import FastAPI, HTTPException
@@ -101,14 +101,14 @@ class ModelTrainer:
 
     def log_mlflow(self):
         tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
-        mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment("Fraud_Detection_Architecture")
+        pipeline_ml.set_tracking_uri(tracking_uri)
+        pipeline_ml.set_experiment("Fraud_Detection_Architecture")
         
-        with mlflow.start_run():
+        with pipeline_ml.start_run():
             accuracy = self.train()
-            mlflow.log_param("n_estimators", 100)
-            mlflow.log_metric("accuracy", accuracy)
-            mlflow.sklearn.log_model(self.model, "fraud_rf_model")
+            pipeline_ml.log_param("n_estimators", 100)
+            pipeline_ml.log_metric("accuracy", accuracy)
+            pipeline_ml.sklearn.log_model(self.model, "fraud_rf_model")
             print(f"[MLFLOW] Run enregistré avec succès. Accuracy: {accuracy}")
 
 app = FastAPI(title="Pipeline Transformation & Modélisation")
