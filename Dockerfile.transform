@@ -2,8 +2,13 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn pandas scikit-learn mlflow
+# 1. On copie d'abord le fichier requirements.txt dans le conteneur
+COPY requirements.txt .
 
-COPY transform.py /app/transform.py
+# 2. On demande à pip d'installer TOUT ce qui est écrit dans ton requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. On copie tout le reste de tes scripts (transform.py, pipeline_ml.py, etc.)
+COPY . .
 
 CMD ["uvicorn", "transform:app", "--host", "0.0.0.0", "--port", "8000"]
