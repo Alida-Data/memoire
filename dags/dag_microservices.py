@@ -16,7 +16,7 @@ with DAG(
     tags=['fraude', 'miage', 'ppda'],
 ) as dag:
 
-    # 1. Extraction
+    # 1. EXTRACTION
     task_extract = SimpleHttpOperator(
         task_id='appel_microservice_extract',
         http_conn_id='http_extract',
@@ -28,19 +28,19 @@ with DAG(
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 2. Transformation des données brutes
+    # 2. TRANSFORMATION (Nettoyage du CSV uniquement)
     task_transform = SimpleHttpOperator(
         task_id='appel_microservice_transform',
         http_conn_id='http_transform',
-        endpoint='run', # Appelle l'endpoint de base du transform-service
+        endpoint='transform-only', #  Nouvel endpoint dédié uniquement au nettoyage
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)}, 
+        extra_options={"timeout": (120, None)}, 
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 3. Chargement vers PostgreSQL
+    # 3. CHARGEMENT (Vers PostgreSQL)
     task_load = SimpleHttpOperator(
         task_id='appel_microservice_load',
         http_conn_id='http_load',
@@ -48,21 +48,22 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)},
+        extra_options={"timeout": (120, None)},
         response_check=lambda response: response.status_code == 200,
     )
 
-    # 4. Modélisation et Tracking MLOps (XGBoost + MLflow)
+    # 4. ENTRAÎNEMENT & MLFLOW (Après le chargement dans la base)
     task_train = SimpleHttpOperator(
         task_id='appel_microservice_train',
         http_conn_id='http_transform', # Même connexion car c'est le même conteneur
-        endpoint='run-pipeline',       # Ton point d'accès pour XGBoost
+        endpoint='train-only',         #  CORRECTION : Appelle uniquement la partie entraînement
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)}, 
+        extra_options={"timeout": (300, None)}, # CORRECTION : 5 min pour laisser le temps à XGBoost de calculer
         response_check=lambda response: response.status_code == 200,
     )
+    
 
-    # Enchaînement optimal de bout en bout
+    #  Ordre strict de ton pipeline d'ingénierie
     task_extract >> task_transform >> task_load >> task_train

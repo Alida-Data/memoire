@@ -36,15 +36,15 @@ class PostgresLoader:
             if col == 'transaction_id':
                 schema.append(f'"{col}" VARCHAR(255) PRIMARY KEY')
                 
-            # 2. Adaptation aux colonnes nettoyées issues de la transformation
-            elif col in ['amount', 'montant_brut', 'montant_transforme']:
+            # 2. 🟢 ALIGNEMENT CRITIQUE : Types corrects pour les features lues par XGBoost/MLflow
+            elif col in ['amount', 'montant_brut', 'montant_transforme', 'velocity_last_hour']:
                 schema.append(f'"{col}" FLOAT')
-            elif col in ['is_fraud', 'heure_transaction', 'jour_semaine']:
+            elif col in ['is_fraud', 'heure_transaction', 'jour_semaine', 'transaction_hour', 'high_risk_merchant', 'weekend_transaction']:
                 schema.append(f'"{col}" INT')
-            elif col in ['empreinte_sha256_64_caracteres']:
-                schema.append(f'"{col}" VARCHAR(64)')  # Taille fixe pour le hash SHA-256
+            elif col in ['empreinte_sha256_64_caracteres', 'card_number']:
+                schema.append(f'"{col}" VARCHAR(64)') 
             elif col in ['date_heure_proper', 'timestamp']:
-                schema.append(f'"{col}" TIMESTAMP')   # Support du format de date propre
+                schema.append(f'"{col}" TIMESTAMP')
             else:
                 schema.append(f'"{col}" VARCHAR(255)')
         return schema

@@ -7,8 +7,8 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier  
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
 import matplotlib.pyplot as plt
-import mlflow  #  Package officiel de tracking
-import mlflow.xgboost  #  Extension XGBoost officielle
+import mlflow  # Package officiel de tracking
+import mlflow.xgboost  # Extension XGBoost officielle
 from fastapi import FastAPI, HTTPException
 import uvicorn
 import traceback
@@ -172,18 +172,27 @@ class ModelTrainer:
             print(f"[SUCCESS] Modèle XGBoost poussé sur MLflow. F1: {f1:.4f}")
 
 # =====================================================================
-# SERVICE API (FastAPI) & Orchestration
+# SERVICE API (FastAPI) - Routes Découplées pour Airflow
 # =====================================================================
-app = FastAPI(title="Pipeline Intégré Transformation & Modélisation")
+app = FastAPI(title="ML Modeling Microservice")
 
-@app.post("/run-pipeline")
-def run_all():
+@app.post("/transform-only")
+def transform_only():
+    """Étape 2 du pipeline : Nettoyage et anonymisation du CSV brut"""
     try:
-        # Étape 1 : Transformation/Anonymisation du CSV si présent
+        print("[INFO] Début du nettoyage et de l'anonymisation du CSV...")
         transformer = DataTransformer("/data/raw_data.csv", "/data/cleaned_data.csv")
         transformer.run_pipeline()
-        
-        # Étape 2 : Extraction depuis la base PostgreSQL centrale
+        return {"status": "success", "message": "Données nettoyées et anonymisées dans /data/cleaned_data.csv."}
+    except Exception as e:
+        print("❌ CRASH DURANT LA TRANSFORMATION :")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erreur Transformation: {str(e)}")
+
+@app.post("/train-only")
+def train_only():
+    """Étape 4 du pipeline : Lecture de PostgreSQL et entraînement XGBoost + MLflow"""
+    try:
         db = DatabaseManager(
             host=os.getenv("DB_HOST", "postgres_memoire"),
             port=5432,
@@ -197,22 +206,23 @@ def run_all():
             FROM public.bank_transactions_cleaned 
             LIMIT 150000;
         """
-        print("[INFO] Extraction des données d'entraînement depuis PostgreSQL...")
+        print("[INFO] Lecture des données chargées dans PostgreSQL pour entraînement...")
         df = db.read_table(query)
         
+        # Gestion des types
         for col in ['high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Étape 3 : Entraînement et Logging MLflow
+        # Entraînement et envoi vers MLflow
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
         
-        return {"status": "success", "message": "Pipeline global exécuté sans erreur avec XGBoost !"}
+        return {"status": "success", "message": "Modèle XGBoost entraîné avec succès depuis PostgreSQL et enregistré sur MLflow."}
     except Exception as e:
-        print(" CRASH DU PIPELINE (DÉTAIL PYTHON) :")
+        print(" CRASH DURANT L'ENTRAÎNEMENT MLOPS :")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Erreur Entraînement: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
