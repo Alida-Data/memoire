@@ -174,9 +174,11 @@ class ModelTrainer:
 # =====================================================================
 # SERVICE API (FastAPI) - Routes Découplées pour Airflow
 # =====================================================================
-app = FastAPI(title="ML Modeling Microservice")
+pp = FastAPI(title="ML Modeling Microservice")
 
+#  Ajout des deux décorateurs pour correspondre parfaitement à ce qu'Airflow demande !
 @app.post("/transform-only")
+@app.post("/transform")  
 def transform_only():
     """Étape 2 du pipeline : Nettoyage et anonymisation du CSV brut"""
     try:
