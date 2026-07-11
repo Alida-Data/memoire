@@ -64,6 +64,15 @@ class PostgresLoader:
         print(f"[INFO] Insertion massive des lignes par paquets de {chunk_size}...")
         
         for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            
+            # 🟢 SÉCURITÉ EXTRAORDINAIRE : Identifier et supprimer la colonne parasite contenant le dictionnaire
+            # On cherche s'il y a une colonne qui commence par des accolades ou du texte de dictionnaire
+            for col in chunk.columns:
+                # Si une ligne contient '{'num_transactions'', on dégage la colonne du traitement
+                if chunk[col].astype(str).str.contains('num_transactions').any():
+                    print(f"[WARNING] Colonne parasite détectée et supprimée pour éviter le crash : {col}")
+                    chunk = chunk.drop(columns=[col])
+            
             # 1. Cast explicite des colonnes problématiques en entiers (0/1)
             cols_to_cast = ['high_risk_merchant', 'weekend_transaction', 'is_fraud']
             for col in cols_to_cast:
@@ -73,12 +82,11 @@ class PostgresLoader:
             # 2. Gestion des valeurs NaN/Null
             chunk = chunk.where(pd.notnull(chunk), None)
             
-            # 3. Récupération stricte de la liste des colonnes du DataFrame
+            # 3. Récupération stricte de la liste des colonnes du DataFrame restantes
             columns_list = list(chunk.columns)
             protected_cols = ",".join([f'"{c}"' for c in columns_list])
             
             # 4. Préparation de la requête nommée dynamique
-            # %(nom_colonne)s force PostgreSQL à chercher la clé correspondante dans le dictionnaire
             values_placeholder = ",".join([f"%({c})s" for c in columns_list])
             
             query = f"""
@@ -87,11 +95,10 @@ class PostgresLoader:
                 ON CONFLICT (transaction_id) DO NOTHING;
             """
             
-            # 5. 🚀 LE FIX ULTIME : Conversion du chunk en liste de dictionnaires. 
-            # Chaque clé du dictionnaire correspondra EXACTEMENT au placeholder %s nommé de PostgreSQL.
+            # 5. Conversion en dictionnaire pour forcer l'alignement par clé
             records = chunk.to_dict(orient='records')
             
-            # 6. Utilisation de execute_batch avec un mapping nommé (beaucoup plus robuste)
+            # 6. Injection robuste
             with self.conn.cursor() as page_cursor:
                 extras.execute_batch(page_cursor, query, records, page_size=5000)
             
