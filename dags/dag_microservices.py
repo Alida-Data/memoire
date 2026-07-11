@@ -32,7 +32,7 @@ with DAG(
     task_transform = SimpleHttpOperator(
         task_id='appel_microservice_transform',
         http_conn_id='http_transform',
-        endpoint='transform-only', #  Nouvel endpoint dédié uniquement au nettoyage
+        endpoint='transform-only', # Endpoint dédié uniquement au nettoyage
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
@@ -56,14 +56,13 @@ with DAG(
     task_train = SimpleHttpOperator(
         task_id='appel_microservice_train',
         http_conn_id='http_transform', # Même connexion car c'est le même conteneur
-        endpoint='train-only',         #  CORRECTION : Appelle uniquement la partie entraînement
+        endpoint='train-only',         # Appelle uniquement la partie entraînement
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (300, None)}, # CORRECTION : 5 min pour laisser le temps à XGBoost de calculer
+        extra_options={"timeout": (300, None)}, # 5 min pour laisser le temps à XGBoost de calculer
         response_check=lambda response: response.status_code == 200,
     )
-    
 
-    #  Ordre strict de ton pipeline d'ingénierie
+    # Ordre strict de ton pipeline d'ingénierie
     task_extract >> task_transform >> task_load >> task_train
