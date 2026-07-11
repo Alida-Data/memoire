@@ -62,10 +62,18 @@ class PostgresLoader:
         print(f"[INFO] Table {self.table_name} recréée avec succès (Clé Primaire activée).")
 
     def insert_data_by_chunks(self, file_path: str, chunk_size: int = 50000):
-        """Lit le fichier CSV par paquets et injecte les données en ignorant les doublons."""
+        """Lit le fichier CSV par paquets et injecte les données en gérant les doublons et les types."""
         print(f"[INFO] Insertion massive des lignes par paquets de {chunk_size}...")
         
         for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            
+            # 🟢 CORRECTION : Cast explicite en entier (0/1) pour éviter le plantage PostgreSQL
+            cols_to_cast = ['high_risk_merchant', 'weekend_transaction', 'is_fraud']
+            for col in cols_to_cast:
+                if col in chunk.columns:
+                    chunk[col] = chunk[col].astype(bool).astype(int)
+            
+            # Remplacement des valeurs NaN par None pour la compatibilité SQL
             chunk = chunk.where(pd.notnull(chunk), None)
             
             protected_cols = ",".join([f'"{c}"' for c in chunk.columns])
