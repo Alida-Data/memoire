@@ -174,7 +174,7 @@ class ModelTrainer:
 # =====================================================================
 # SERVICE API (FastAPI) - Routes Découplées pour Airflow
 # =====================================================================
-pp = FastAPI(title="ML Modeling Microservice")
+app = FastAPI(title="ML Modeling Microservice")
 
 #  Ajout des deux décorateurs pour correspondre parfaitement à ce qu'Airflow demande !
 @app.post("/transform-only")
