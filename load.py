@@ -32,11 +32,8 @@ class PostgresLoader:
         """Méthode interne pour mapper dynamiquement les types de colonnes du CSV nettoyé."""
         schema = []
         for col in first_row_df.columns:
-            # 1. Protection et typage de la clé primaire pour bloquer les doublons du CSV
             if col == 'transaction_id':
                 schema.append(f'"{col}" VARCHAR(255) PRIMARY KEY')
-                
-            # 2. 🟢 ALIGNEMENT CRITIQUE : Types corrects pour les features lues par XGBoost/MLflow
             elif col in ['amount', 'montant_brut', 'montant_transforme', 'velocity_last_hour']:
                 schema.append(f'"{col}" FLOAT')
             elif col in ['is_fraud', 'heure_transaction', 'jour_semaine', 'transaction_hour', 'high_risk_merchant', 'weekend_transaction']:
@@ -46,7 +43,8 @@ class PostgresLoader:
             elif col in ['date_heure_proper', 'timestamp']:
                 schema.append(f'"{col}" TIMESTAMP')
             else:
-                schema.append(f'"{col}" VARCHAR(255)')
+                # 🟢 SÉCURITÉ ABSOLUE : Tout le reste (dont les chaînes JSON/Dictionnaires) passe en TEXT
+                schema.append(f'"{col}" TEXT')
         return schema
 
     def prepare_table(self, file_path: str):
@@ -62,31 +60,41 @@ class PostgresLoader:
         print(f"[INFO] Table {self.table_name} recréée avec succès (Clé Primaire activée).")
 
     def insert_data_by_chunks(self, file_path: str, chunk_size: int = 50000):
-        """Lit le fichier CSV par paquets et injecte les données en gérant les doublons et les types."""
+        """Lit le fichier CSV par paquets et injecte les données avec un mapping par clés nommé."""
         print(f"[INFO] Insertion massive des lignes par paquets de {chunk_size}...")
         
         for chunk in pd.read_csv(file_path, chunksize=chunk_size):
-            
-            # 🟢 CORRECTION : Cast explicite en entier (0/1) pour éviter le plantage PostgreSQL
+            # 1. Cast explicite des colonnes problématiques en entiers (0/1)
             cols_to_cast = ['high_risk_merchant', 'weekend_transaction', 'is_fraud']
             for col in cols_to_cast:
                 if col in chunk.columns:
                     chunk[col] = chunk[col].astype(bool).astype(int)
             
-            # Remplacement des valeurs NaN par None pour la compatibilité SQL
+            # 2. Gestion des valeurs NaN/Null
             chunk = chunk.where(pd.notnull(chunk), None)
             
-            protected_cols = ",".join([f'"{c}"' for c in chunk.columns])
+            # 3. Récupération stricte de la liste des colonnes du DataFrame
+            columns_list = list(chunk.columns)
+            protected_cols = ",".join([f'"{c}"' for c in columns_list])
             
-            # Utilisation de ON CONFLICT DO NOTHING pour ignorer silencieusement les doublons du CSV
+            # 4. Préparation de la requête nommée dynamique
+            # %(nom_colonne)s force PostgreSQL à chercher la clé correspondante dans le dictionnaire
+            values_placeholder = ",".join([f"%({c})s" for c in columns_list])
+            
             query = f"""
                 INSERT INTO {self.table_name} ({protected_cols}) 
-                VALUES %s 
+                VALUES ({values_placeholder}) 
                 ON CONFLICT (transaction_id) DO NOTHING;
             """
             
-            tuples_list = [tuple(x) for x in chunk.to_numpy()]
-            extras.execute_values(self.cursor, query, tuples_list)
+            # 5. 🚀 LE FIX ULTIME : Conversion du chunk en liste de dictionnaires. 
+            # Chaque clé du dictionnaire correspondra EXACTEMENT au placeholder %s nommé de PostgreSQL.
+            records = chunk.to_dict(orient='records')
+            
+            # 6. Utilisation de execute_batch avec un mapping nommé (beaucoup plus robuste)
+            with self.conn.cursor() as page_cursor:
+                extras.execute_batch(page_cursor, query, records, page_size=5000)
+            
             self.conn.commit()
 
     def run_pipeline(self, file_path: str, chunk_size: int = 50000):
