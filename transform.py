@@ -228,30 +228,29 @@ def train_only():
         )
         
         # 1. Requête SQL avec guillemets doubles pour PostgreSQL
+        # 1. Extraction globale sécurisée pour contourner le typage strict de PostgreSQL
         query = """
-            SELECT 
-                "amount", 
-                "high_risk_merchant", 
-                "transaction_hour", 
-                "weekend_transaction", 
-                "velocity_last_hour", 
-                "is_fraud" 
-            FROM public.bank_transactions_cleaned 
+            SELECT * FROM public.bank_transactions_cleaned 
             LIMIT 150000;
         """
-        print("[INFO] Lecture des données chargées dans PostgreSQL pour entraînement...")
-        df = db.read_table(query)
+        print("[INFO] Lecture globale des données chargées dans PostgreSQL...")
+        df_raw = db.read_table(query)
         
-        #  SÉCURITÉ : Nettoyer les noms de colonnes dans Pandas (enlève les guillemets résiduels et espaces)
-        df.columns = df.columns.str.replace('"', '').str.strip()
+        # 2. Nettoyage immédiat de la casse et des guillemets dans Pandas
+        df_raw.columns = df_raw.columns.str.replace('"', '').str.strip().str.lower()
         
-        # 2. Gestion stricte des types numériques (les noms correspondent maintenant parfaitement)
-        features = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']
-        for col in features:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # 3. Sélection stricte des features requises dans Pandas
+        features_list = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour', 'is_fraud']
         
-        # 3. Lancement du rééchantillonnage (SMOTE-Tomek) et de l'apprentissage machine
+        # On ne garde que les colonnes qui existent réellement après normalisation
+        df = df_raw[[col for col in features_list if col in df_raw.columns]].copy()
+        print(f"[INFO] Colonnes récupérées avec succès : {list(df.columns)}")
+        
+        # 4. Gestion stricte des types numériques
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # 5. Lancement du rééchantillonnage et de l'entraînement MLOps
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
         
