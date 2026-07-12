@@ -242,7 +242,7 @@ def train_only():
         print("[INFO] Lecture des données chargées dans PostgreSQL pour entraînement...")
         df = db.read_table(query)
         
-        # 🟢 SÉCURITÉ : Nettoyer les noms de colonnes dans Pandas (enlève les guillemets résiduels et espaces)
+        #  SÉCURITÉ : Nettoyer les noms de colonnes dans Pandas (enlève les guillemets résiduels et espaces)
         df.columns = df.columns.str.replace('"', '').str.strip()
         
         # 2. Gestion stricte des types numériques (les noms correspondent maintenant parfaitement)
