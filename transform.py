@@ -1,6 +1,7 @@
 import os
 import hashlib
 import pandas as pd
+import numpy as np
 import psycopg2
 from sqlalchemy import create_engine
 from sklearn.model_selection import train_test_split
@@ -12,6 +13,7 @@ import mlflow.xgboost  # Extension XGBoost officielle
 from fastapi import FastAPI, HTTPException
 import uvicorn
 import traceback
+from imblearn.combine import SMOTETomek  # Pour surmonter le déséquilibre extrême
 
 # =====================================================================
 # CLASSE: Nettoyage et Transformation (Anonymisation)
@@ -29,6 +31,13 @@ class DataTransformer:
 
     def clean_chunk(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+        
+        #  SÉCURITÉ : Nettoyage des colonnes parasites contenant des dictionnaires (ex: erreurs JSON précédentes)
+        for col in df.columns:
+            if df[col].astype(str).str.contains('num_transactions').any():
+                print(f"[WARNING] Colonne parasite supprimée du traitement : {col}")
+                df = df.drop(columns=[col])
+
         if 'transaction_id' in df.columns:
             df = df.drop_duplicates(subset=['transaction_id'], keep='first')
         else:
@@ -94,22 +103,21 @@ class DatabaseManager:
         return pd.read_sql(query, self.engine)
 
 # =====================================================================
-# CLASSE: Entraîneur de Modèle (XGBoost + MLflow officiel)
+# CLASSE: Entraîneur de Modèle (XGBoost + SMOTE-Tomek + MLflow)
 # =====================================================================
 class ModelTrainer:
     def __init__(self, dataframe, target="is_fraud"):
         self.dataframe = dataframe
         self.target = target
         
-        nb_neg = (self.dataframe[self.target] == 0).sum()
-        nb_pos = (self.dataframe[self.target] == 1).sum()
-        ratio = (nb_neg / nb_pos) if nb_pos > 0 else 1.0
-
+        #  CONFIGURATION DES HYPERPARAMÈTRES AVANCÉS POUR LE 95%+
         self.params = {
-            "n_estimators": 150,
-            "max_depth": 6,
-            "learning_rate": 0.1,
-            "scale_pos_weight": ratio,
+            "n_estimators": 800,           # Augmenté pour capturer les interactions complexes
+            "max_depth": 7,                # Légèrement augmenté pour l'espace des variables comportementales
+            "learning_rate": 0.05,         # Plus faible pour une convergence robuste et sans surapprentissage
+            "subsample": 0.8,              # Prévient l'overfitting sur les transactions légitimes répétitives
+            "colsample_bytree": 0.8,       # Force chaque arbre à regarder un sous-ensemble de variables
+            "eval_metric": "aucpr",        # CRUCIAL : Optimise la Précision et le Rappel (PR-AUC) au lieu de l'accuracy pure
             "random_state": 42
         }
         self.model = XGBClassifier(**self.params)
@@ -126,14 +134,26 @@ class ModelTrainer:
 
         X_train, X_test, y_train, y_test = self.prepare_data()
 
-        with mlflow.start_run(run_name="Entrainement_XGBoost_Final_Cleaned"):
+        #  APPLICATION DE SMOTE-TOMEK : Nettoie les frontières de classes et crée des fraudes synthétiques
+        print("[INFO] Application de SMOTE-Tomek sur le dataset d'entraînement...")
+        smt = SMOTETomek(random_state=42)
+        X_train_res, y_train_res = smt.fit_resample(X_train, y_train)
+
+        with mlflow.start_run(run_name="Entrainement_XGBoost_Haute_Precision"):
             mlflow.log_params(self.params)
-            self.model.fit(X_train, y_train)
+            
+            # Entraînement sur les données rééquilibrées
+            self.model.fit(
+                X_train_res, y_train_res,
+                eval_set=[(X_test, y_test)],
+                verbose=False
+            )
             
             y_pred = self.model.predict(X_test)
             y_pred_proba = self.model.predict_proba(X_test)[:, 1]
             
-            f1 = f1_score(y_test, y_pred, average='macro')
+            # Évaluation basée sur les métriques réelles requises
+            f1 = f1_score(y_test, y_pred, average='binary') # Changé en binary pour refléter la classe positive (Fraude)
             accuracy = accuracy_score(y_test, y_pred)
             
             mlflow.log_metric("f1_score", f1)
@@ -145,8 +165,8 @@ class ModelTrainer:
                 plt.figure(figsize=(6, 6))
                 cm = confusion_matrix(y_test, y_pred)
                 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Fraude'])
-                disp.plot(cmap='Blues')
-                plt.title("Matrice de Confusion")
+                disp.plot(cmap='Blues', values_format='d')
+                plt.title("Matrice de Confusion Optimisée")
                 plt.savefig("confusion_matrix.png", bbox_inches='tight')
                 mlflow.log_artifact("confusion_matrix.png")
                 plt.close()
@@ -157,26 +177,30 @@ class ModelTrainer:
                 roc_auc = auc(fpr, tpr)
                 plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
                 plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-                plt.title("Courbe ROC - Modèle XGBoost")
+                plt.xlabel('Taux de Faux Positifs')
+                plt.ylabel('Taux de Vrais Positifs')
+                plt.title("Courbe ROC - Version Haute Précision")
+                plt.legend(loc="lower right")
                 plt.savefig("roc_curve.png", bbox_inches='tight')
                 mlflow.log_artifact("roc_curve.png")
                 plt.close()
+                print("[INFO] Graphiques sauvegardés et transmis comme Artifacts à MLflow.")
             except Exception as graph_err:
-                print(f"[WARNING] Erreur graphiques : {graph_err}")
+                print(f"[WARNING] Erreur lors de la génération des graphiques : {graph_err}")
 
+            # Enregistrement officiel et versioning automatique du modèle
             mlflow.xgboost.log_model(
                 xgb_model=self.model, 
                 artifact_path="model_fraude",
                 registered_model_name="XGBoost_Fraude_Model"
             )
-            print(f"[SUCCESS] Modèle XGBoost poussé sur MLflow. F1: {f1:.4f}")
+            print(f"[SUCCESS] Modèle XGBoost poussé sur MLflow. Nouveau F1-Score: {f1:.4f}")
 
 # =====================================================================
 # SERVICE API (FastAPI) - Routes Découplées pour Airflow
 # =====================================================================
 app = FastAPI(title="ML Modeling Microservice")
 
-#  Ajout des deux décorateurs pour correspondre parfaitement à ce qu'Airflow demande !
 @app.post("/transform-only")
 @app.post("/transform")  
 def transform_only():
@@ -187,7 +211,7 @@ def transform_only():
         transformer.run_pipeline()
         return {"status": "success", "message": "Données nettoyées et anonymisées dans /data/cleaned_data.csv."}
     except Exception as e:
-        print("❌ CRASH DURANT LA TRANSFORMATION :")
+        print("CRASH DURANT LA TRANSFORMATION :")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erreur Transformation: {str(e)}")
 
@@ -211,12 +235,12 @@ def train_only():
         print("[INFO] Lecture des données chargées dans PostgreSQL pour entraînement...")
         df = db.read_table(query)
         
-        # Gestion des types
-        for col in ['high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']:
+        # Gestion stricte des types numériques
+        for col in ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Entraînement et envoi vers MLflow
+        # Lancement du rééchantillonnage et de l'apprentissage machine
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
         
