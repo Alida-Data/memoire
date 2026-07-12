@@ -227,20 +227,31 @@ def train_only():
             password="postgres"
         )
         
+        # 1. Requête SQL avec guillemets doubles pour PostgreSQL
         query = """
-            SELECT amount, high_risk_merchant, transaction_hour, weekend_transaction, velocity_last_hour, is_fraud 
+            SELECT 
+                "amount", 
+                "high_risk_merchant", 
+                "transaction_hour", 
+                "weekend_transaction", 
+                "velocity_last_hour", 
+                "is_fraud" 
             FROM public.bank_transactions_cleaned 
             LIMIT 150000;
         """
         print("[INFO] Lecture des données chargées dans PostgreSQL pour entraînement...")
         df = db.read_table(query)
         
-        # Gestion stricte des types numériques
-        for col in ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']:
+        # 🟢 SÉCURITÉ : Nettoyer les noms de colonnes dans Pandas (enlève les guillemets résiduels et espaces)
+        df.columns = df.columns.str.replace('"', '').str.strip()
+        
+        # 2. Gestion stricte des types numériques (les noms correspondent maintenant parfaitement)
+        features = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour']
+        for col in features:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Lancement du rééchantillonnage et de l'apprentissage machine
+        # 3. Lancement du rééchantillonnage (SMOTE-Tomek) et de l'apprentissage machine
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
         
@@ -249,6 +260,7 @@ def train_only():
         print(" CRASH DURANT L'ENTRAÎNEMENT MLOPS :")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erreur Entraînement: {str(e)}")
+    
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
