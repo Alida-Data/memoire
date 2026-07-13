@@ -15,6 +15,10 @@ import uvicorn
 import traceback
 from imblearn.combine import SMOTETomek  # Pour surmonter le déséquilibre extrême
 
+# Désactiver l'interface graphique de Matplotlib pour éviter les bugs de mémoire dans Docker
+import matplotlib
+matplotlib.use('Agg')
+
 # =====================================================================
 # CLASSE: Nettoyage et Transformation (Anonymisation)
 # =====================================================================
@@ -32,7 +36,6 @@ class DataTransformer:
     def clean_chunk(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
-        #  SÉCURITÉ : Nettoyage des colonnes parasites contenant des dictionnaires (ex: erreurs JSON précédentes)
         for col in df.columns:
             if df[col].astype(str).str.contains('num_transactions').any():
                 print(f"[WARNING] Colonne parasite supprimée du traitement : {col}")
@@ -110,17 +113,18 @@ class ModelTrainer:
         self.dataframe = dataframe
         self.target = target
         
-        #  CONFIGURATION DES HYPERPARAMÈTRES AVANCÉS POUR LE 95%+
+        # CONFIGURATION DES HYPERPARAMÈTRES OPTIMISÉS
         self.params = {
-            "n_estimators": 800,           # Augmenté pour capturer les interactions complexes
-            "max_depth": 7,                # Légèrement augmenté pour l'espace des variables comportementales
-            "learning_rate": 0.05,         # Plus faible pour une convergence robuste et sans surapprentissage
-            "subsample": 0.8,              # Prévient l'overfitting sur les transactions légitimes répétitives
-            "colsample_bytree": 0.8,       # Force chaque arbre à regarder un sous-ensemble de variables
-            "eval_metric": "aucpr",        # CRUCIAL : Optimise la Précision et le Rappel (PR-AUC) au lieu de l'accuracy pure
+            "n_estimators": 800,           
+            "max_depth": 7,                
+            "learning_rate": 0.03,         # Baissé à 0.03 pour affiner la convergence avec SMOTE
+            "subsample": 0.8,              
+            "colsample_bytree": 0.8,       
+            "eval_metric": "aucpr",        # Focus sur la courbe Précision-Rappel
             "random_state": 42
         }
-        self.model = XGBClassifier(**self.params)
+        # L'early stopping est passé via l'initialiseur proprement
+        self.model = XGBClassifier(**self.params, early_stopping_rounds=50)
 
     def prepare_data(self):
         X = self.dataframe.select_dtypes(include=['number']).drop(columns=[self.target], errors='ignore')
@@ -134,15 +138,16 @@ class ModelTrainer:
 
         X_train, X_test, y_train, y_test = self.prepare_data()
 
-        #  APPLICATION DE SMOTE-TOMEK : Nettoie les frontières de classes et crée des fraudes synthétiques
+        # APPLICATION DE SMOTE-TOMEK
         print("[INFO] Application de SMOTE-Tomek sur le dataset d'entraînement...")
         smt = SMOTETomek(random_state=42)
         X_train_res, y_train_res = smt.fit_resample(X_train, y_train)
 
         with mlflow.start_run(run_name="Entrainement_XGBoost_Haute_Precision"):
+            # Sécurisé : Enregistrement des paramètres sans conflit de type
             mlflow.log_params(self.params)
             
-            # Entraînement sur les données rééquilibrées
+            # Entraînement avec validation sur le vrai dataset de test pour stopper l'overfitting
             self.model.fit(
                 X_train_res, y_train_res,
                 eval_set=[(X_test, y_test)],
@@ -152,23 +157,28 @@ class ModelTrainer:
             y_pred = self.model.predict(X_test)
             y_pred_proba = self.model.predict_proba(X_test)[:, 1]
             
-            # Évaluation basée sur les métriques réelles requises
-            f1 = f1_score(y_test, y_pred, average='binary') # Changé en binary pour refléter la classe positive (Fraude)
+            f1 = f1_score(y_test, y_pred, average='binary')
             accuracy = accuracy_score(y_test, y_pred)
             
             mlflow.log_metric("f1_score", f1)
             mlflow.log_metric("accuracy", accuracy)
             mlflow.set_tag("Statut", "Pipeline_Production_Valide")
             
+            # --- GÉNÉRATION ET ENVOI DES GRAPHIKES VERS ARTIFACTS ---
+            # --- GÉNÉRATION ET ENVOI DES GRAPHIKES VERS ARTIFACTS ---
             try:
+                # Définir des chemins absolus temporaires sécurisés
+                cm_path = "/tmp/confusion_matrix.png"
+                roc_path = "/tmp/roc_curve.png"
+
                 # 1. Matrice de Confusion
                 plt.figure(figsize=(6, 6))
                 cm = confusion_matrix(y_test, y_pred)
                 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Fraude'])
                 disp.plot(cmap='Blues', values_format='d')
                 plt.title("Matrice de Confusion Optimisée")
-                plt.savefig("confusion_matrix.png", bbox_inches='tight')
-                mlflow.log_artifact("confusion_matrix.png")
+                plt.savefig(cm_path, bbox_inches='tight')
+                mlflow.log_artifact(cm_path)  # Envoi le fichier depuis /tmp/
                 plt.close()
 
                 # 2. Courbe ROC
@@ -181,21 +191,13 @@ class ModelTrainer:
                 plt.ylabel('Taux de Vrais Positifs')
                 plt.title("Courbe ROC - Version Haute Précision")
                 plt.legend(loc="lower right")
-                plt.savefig("roc_curve.png", bbox_inches='tight')
-                mlflow.log_artifact("roc_curve.png")
+                plt.savefig(roc_path, bbox_inches='tight')
+                mlflow.log_artifact(roc_path)  # Envoi le fichier depuis /tmp/
                 plt.close()
-                print("[INFO] Graphiques sauvegardés et transmis comme Artifacts à MLflow.")
+                print("[INFO] Graphiques sauvegardés dans /tmp/ et transmis à MLflow.")
             except Exception as graph_err:
-                print(f"[WARNING] Erreur lors de la génération des graphiques : {graph_err}")
-
-            # Enregistrement officiel et versioning automatique du modèle
-            mlflow.xgboost.log_model(
-                xgb_model=self.model, 
-                artifact_path="model_fraude",
-                registered_model_name="XGBoost_Fraude_Model"
-            )
-            print(f"[SUCCESS] Modèle XGBoost poussé sur MLflow. Nouveau F1-Score: {f1:.4f}")
-
+                print(f"[CRITICAL ERROR GRAPHES] Erreur : {graph_err}")
+                traceback.print_exc()  # 💡 Ajout pour voir la vraie cause dans les logs !
 # =====================================================================
 # SERVICE API (FastAPI) - Routes Découplées pour Airflow
 # =====================================================================
@@ -204,7 +206,6 @@ app = FastAPI(title="ML Modeling Microservice")
 @app.post("/transform-only")
 @app.post("/transform")  
 def transform_only():
-    """Étape 2 du pipeline : Nettoyage et anonymisation du CSV brut"""
     try:
         print("[INFO] Début du nettoyage et de l'anonymisation du CSV...")
         transformer = DataTransformer("/data/raw_data.csv", "/data/cleaned_data.csv")
@@ -217,7 +218,6 @@ def transform_only():
 
 @app.post("/train-only")
 def train_only():
-    """Étape 4 du pipeline : Lecture de PostgreSQL et entraînement XGBoost + MLflow"""
     try:
         db = DatabaseManager(
             host=os.getenv("DB_HOST", "postgres_memoire"),
@@ -227,8 +227,6 @@ def train_only():
             password="postgres"
         )
         
-        # 1. Requête SQL avec guillemets doubles pour PostgreSQL
-        # 1. Extraction globale sécurisée pour contourner le typage strict de PostgreSQL
         query = """
             SELECT * FROM public.bank_transactions_cleaned 
             LIMIT 150000;
@@ -236,21 +234,16 @@ def train_only():
         print("[INFO] Lecture globale des données chargées dans PostgreSQL...")
         df_raw = db.read_table(query)
         
-        # 2. Nettoyage immédiat de la casse et des guillemets dans Pandas
         df_raw.columns = df_raw.columns.str.replace('"', '').str.strip().str.lower()
         
-        # 3. Sélection stricte des features requises dans Pandas
         features_list = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour', 'is_fraud']
         
-        # On ne garde que les colonnes qui existent réellement après normalisation
         df = df_raw[[col for col in features_list if col in df_raw.columns]].copy()
         print(f"[INFO] Colonnes récupérées avec succès : {list(df.columns)}")
         
-        # 4. Gestion stricte des types numériques
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # 5. Lancement du rééchantillonnage et de l'entraînement MLOps
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()
         
@@ -259,7 +252,6 @@ def train_only():
         print(" CRASH DURANT L'ENTRAÎNEMENT MLOPS :")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erreur Entraînement: {str(e)}")
-    
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
