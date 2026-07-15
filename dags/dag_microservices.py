@@ -24,7 +24,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (60, None)}, 
+        extra_options={"timeout": 3600}, 
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -36,7 +36,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (120, None)}, 
+        extra_options={"timeout": 3600}, 
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -48,7 +48,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (120, None)},
+        extra_options={"timeout": 3600},
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -60,7 +60,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": (300, None)}, # 5 min pour laisser le temps à XGBoost de calculer
+        extra_options={"timeout": 1800}, # 5 min pour laisser le temps à XGBoost de calculer
         response_check=lambda response: response.status_code == 200,
     )
 

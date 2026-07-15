@@ -33,12 +33,13 @@ services:
     container_name: mlflow_server_memoire
     environment:
       - MLFLOW_HTTP_PROXY_ALLOW_ALL=True
-    # 💡 CORRECTION : On change la racine des artefacts pour pointer sur notre volume partagé /mlruns
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///tmp/mlflow.db --default-artifact-root /mlruns
+    #  CORRECTION : On isole sqlite dans /mlruns/metadata et les graphiques/modèles dans /mlruns/artifacts
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlruns/metadata/mlflow.db --default-artifact-root /mlruns/artifacts
     volumes:
-      - mlflow_data:/mlruns # 👈 AJOUT : Le serveur MLflow stocke et lit ici
+      - mlflow_data:/mlruns
     networks:
       - pipeline_network
+      
 
   # 🛡️ MLflow Proxy (Nginx) : La version finale par montage de fichier (sans crash Windows)
   mlflow_proxy:
@@ -86,7 +87,7 @@ services:
       - MLFLOW_TRACKING_URI=http://mlflow_proxy:5000
     volumes:
       - shared_data:/data
-      
+      - mlflow_data:/mlruns
     depends_on:
       - postgres
       - mlflow_proxy
