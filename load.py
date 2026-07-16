@@ -33,9 +33,9 @@ class PostgresLoader:
         for col in first_row_df.columns:
             if col == 'transaction_id':
                 schema.append(f'"{col}" VARCHAR(255) PRIMARY KEY')
-            elif col in ['amount', 'montant_brut', 'montant_transforme', 'velocity_last_hour']:
+            elif col in ['amount', 'montant_brut', 'montant_transforme', 'velocity_last_hour', 'oldbalance_org', 'newbalance_orig', 'oldbalance_dest', 'newbalance_dest']:
                 schema.append(f'"{col}" FLOAT')
-            elif col in ['is_fraud', 'heure_transaction', 'jour_semaine', 'transaction_hour', 'high_risk_merchant', 'weekend_transaction']:
+            elif col in ['is_fraud', 'heure_transaction', 'jour_semaine', 'transaction_hour', 'high_risk_merchant', 'weekend_transaction', 'step', 'is_flagged_fraud']:
                 schema.append(f'"{col}" INT')
             elif col in ['empreinte_sha256_64_caracteres', 'card_number']:
                 schema.append(f'"{col}" VARCHAR(64)') 
@@ -51,11 +51,12 @@ class PostgresLoader:
         first_row = pd.read_csv(file_path, nrows=1)
         schema = self._generate_schema(first_row)
         
+        # Le DROP TABLE garantit que l'espace disque est libéré à chaque exécution du DAG !
         self.cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
         create_query = f"CREATE TABLE {table_name} ({', '.join(schema)});"
         self.cursor.execute(create_query)
         self.conn.commit()
-        print(f"[INFO] Table {table_name} recréée avec succès (Clé Primaire activée).")
+        print(f"[INFO] Table {table_name} recréée avec succès.")
 
     def insert_data_by_chunks(self, file_path: str, table_name: str, chunk_size: int = 50000):
         """Lit le fichier CSV par paquets et injecte les données dans la table spécifiée."""
@@ -83,10 +84,16 @@ class PostgresLoader:
             protected_cols = ",".join([f'"{c}"' for c in columns_list])
             values_placeholder = ",".join([f"%({c})s" for c in columns_list])
             
+            # 💡 SÉCURITÉ CONFLICT : On n'applique le ON CONFLICT que si la clé primaire est présente dans ce CSV
+            if 'transaction_id' in columns_list:
+                conflict_clause = "ON CONFLICT (transaction_id) DO NOTHING"
+            else:
+                conflict_clause = ""
+
             query = f"""
                 INSERT INTO {table_name} ({protected_cols}) 
                 VALUES ({values_placeholder}) 
-                ON CONFLICT (transaction_id) DO NOTHING;
+                {conflict_clause};
             """
             
             records = chunk.to_dict(orient='records')
@@ -124,10 +131,9 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", 
     "postgresql://postgres:postgres@postgres_memoire:5432/memoire"
 )
-RAW_DATA_PATH = os.getenv("RAW_DATA_PATH", "/data/raw_data.csv")  # 👈 Chemin du CSV brut
+RAW_DATA_PATH = os.getenv("RAW_DATA_PATH", "/data/raw_data.csv")
 CLEAN_DATA_PATH = os.getenv("CLEAN_DATA_PATH", "/data/cleaned_data.csv")
 
-# Instance du loader (sans nom de table fixe dans l'init)
 db_loader = PostgresLoader(db_url=DATABASE_URL)
 
 @app.post("/run")
