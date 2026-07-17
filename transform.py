@@ -105,6 +105,25 @@ class DatabaseManager:
         if self.engine is None: self.connect()
         return pd.read_sql(query, self.engine)
 
+    def load_csv_chunks(self, csv_path: str, table_name: str, chunk_size: int = 100000):
+        """Vide la table cible et injecte un fichier CSV par blocs (chunks) pour optimiser la mémoire RAM."""
+        if self.engine is None: 
+            self.connect()
+
+        print(f"[INFO] Nettoyage (TRUNCATE) de la table public.{table_name}...")
+        with self.engine.begin() as conn:
+            conn.execute(f"TRUNCATE TABLE public.{table_name} RESTART IDENTITY CASCADE;")
+
+        print(f"[INFO] Début de l'injection de {csv_path} dans la table public.{table_name}...")
+        for i, chunk in enumerate(pd.read_csv(csv_path, chunksize=chunk_size)):
+            # Nettoyage uniforme des noms de colonnes
+            chunk.columns = chunk.columns.str.strip().str.lower().str.replace('"', '')
+            
+            # Injection par blocs
+            chunk.to_sql(table_name, self.engine, if_exists='append', index=False)
+            print(f"[INFO] Bloc {i + 1} inséré avec succès ({len(chunk)} lignes).")
+
+
 # =====================================================================
 # CLASSE: Entraîneur de Modèle (XGBoost + SMOTE-Tomek + MLflow)
 # =====================================================================
@@ -123,7 +142,6 @@ class ModelTrainer:
             "eval_metric": "aucpr",        # Focus sur la courbe Précision-Rappel
             "random_state": 42
         }
-        # L'early stopping est passé via l'initialiseur proprement
         self.model = XGBClassifier(**self.params, early_stopping_rounds=50)
 
     def prepare_data(self):
@@ -144,10 +162,8 @@ class ModelTrainer:
         X_train_res, y_train_res = smt.fit_resample(X_train, y_train)
 
         with mlflow.start_run(run_name="Entrainement_XGBoost_Haute_Precision"):
-            # Sécurisé : Enregistrement des paramètres sans conflit de type
             mlflow.log_params(self.params)
             
-            # Entraînement avec validation sur le vrai dataset de test pour stopper l'overfitting
             self.model.fit(
                 X_train_res, y_train_res,
                 eval_set=[(X_test, y_test)],
@@ -164,10 +180,8 @@ class ModelTrainer:
             mlflow.log_metric("accuracy", accuracy)
             mlflow.set_tag("Statut", "Pipeline_Production_Valide")
             
-            # --- GÉNÉRATION ET ENVOI DES GRAPHIKES VERS ARTIFACTS ---
-            # --- GÉNÉRATION ET ENVOI DES GRAPHIKES VERS ARTIFACTS ---
+            # --- GÉNÉRATION ET ENVOI DES GRAPHES VERS ARTIFACTS ---
             try:
-                # Définir des chemins absolus temporaires sécurisés
                 cm_path = "/tmp/confusion_matrix.png"
                 roc_path = "/tmp/roc_curve.png"
 
@@ -178,7 +192,7 @@ class ModelTrainer:
                 disp.plot(cmap='Blues', values_format='d')
                 plt.title("Matrice de Confusion Optimisée")
                 plt.savefig(cm_path, bbox_inches='tight')
-                mlflow.log_artifact(cm_path)  # Envoi le fichier depuis /tmp/
+                mlflow.log_artifact(cm_path)
                 plt.close()
 
                 # 2. Courbe ROC
@@ -192,20 +206,48 @@ class ModelTrainer:
                 plt.title("Courbe ROC - Version Haute Précision")
                 plt.legend(loc="lower right")
                 plt.savefig(roc_path, bbox_inches='tight')
-                mlflow.log_artifact(roc_path)  # Envoi le fichier depuis /tmp/
+                mlflow.log_artifact(roc_path)
                 plt.close()
                 print("[INFO] Graphiques sauvegardés dans /tmp/ et transmis à MLflow.")
             except Exception as graph_err:
                 print(f"[CRITICAL ERROR GRAPHES] Erreur : {graph_err}")
-                traceback.print_exc()  # 💡 Ajout pour voir la vraie cause dans les logs !
+                traceback.print_exc()
+
 # =====================================================================
-# SERVICE API (FastAPI) - Routes Découplées pour Airflow
+# SERVICE API (FastAPI)
 # =====================================================================
 app = FastAPI(title="ML Modeling Microservice")
+
+@app.post("/load-raw")
+def load_raw():
+    """Déclenche l'import direct du CSV brut dans la table public.bank_transactions."""
+    try:
+        raw_path = "/data/raw_data.csv"
+        table_name = "bank_transactions"
+        
+        if not os.path.exists(raw_path):
+            raise HTTPException(status_code=404, detail=f"Fichier brut {raw_path} non trouvé dans le volume.")
+            
+        db = DatabaseManager(
+            host=os.getenv("DB_HOST", "postgres_memoire"),
+            port=5432,
+            database="memoire",
+            user="postgres",
+            password="postgres"
+        )
+        
+        db.load_csv_chunks(csv_path=raw_path, table_name=table_name, chunk_size=100000)
+        return {"status": "success", "message": f"Données brutes chargées avec succès dans public.{table_name}."}
+    except Exception as e:
+        print("CRASH DURANT LE CHARGEMENT DE LA TABLE BRUTE :")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erreur d'importation : {str(e)}")
+
 
 @app.post("/transform-only")
 @app.post("/transform")  
 def transform_only():
+    """Effectue l'anonymisation et le nettoyage locaux, produit cleaned_data.csv."""
     try:
         print("[INFO] Début du nettoyage et de l'anonymisation du CSV...")
         transformer = DataTransformer("/data/raw_data.csv", "/data/cleaned_data.csv")
@@ -216,8 +258,36 @@ def transform_only():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erreur Transformation: {str(e)}")
 
+
+@app.post("/load-cleaned")
+def load_cleaned():
+    """Déclenche l'import du CSV nettoyé et anonymisé dans la table public.bank_transactions_cleaned."""
+    try:
+        cleaned_path = "/data/cleaned_data.csv"
+        table_name = "bank_transactions_cleaned"
+        
+        if not os.path.exists(cleaned_path):
+            raise HTTPException(status_code=404, detail=f"Fichier nettoyé {cleaned_path} non trouvé. Exécutez d'abord /transform.")
+            
+        db = DatabaseManager(
+            host=os.getenv("DB_HOST", "postgres_memoire"),
+            port=5432,
+            database="memoire",
+            user="postgres",
+            password="postgres"
+        )
+        
+        db.load_csv_chunks(csv_path=cleaned_path, table_name=table_name, chunk_size=100000)
+        return {"status": "success", "message": f"Données nettoyées chargées avec succès dans public.{table_name}."}
+    except Exception as e:
+        print("CRASH DURANT LE CHARGEMENT DE LA TABLE NETTOYÉE :")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erreur d'importation : {str(e)}")
+
+
 @app.post("/train-only")
 def train_only():
+    """Entraîne le modèle en se basant sur la table propre de Postgres."""
     try:
         db = DatabaseManager(
             host=os.getenv("DB_HOST", "postgres_memoire"),
@@ -227,11 +297,12 @@ def train_only():
             password="postgres"
         )
         
+        # Lecture depuis la table nettoyée
         query = """
             SELECT * FROM public.bank_transactions_cleaned 
             LIMIT 150000;
         """
-        print("[INFO] Lecture globale des données chargées dans PostgreSQL...")
+        print("[INFO] Lecture globale des données propres chargées dans PostgreSQL...")
         df_raw = db.read_table(query)
         
         df_raw.columns = df_raw.columns.str.replace('"', '').str.strip().str.lower()
