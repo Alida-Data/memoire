@@ -25,16 +25,21 @@ services:
       retries: 5
 # Service Application Streamlit + Assistant IA
   streamlit_app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app  # <-- Utilise ton Dockerfile général
     container_name: streamlit_app
     restart: always
     ports:
-      - "8501:8501" # Port d'accès à l'interface Web
+      - "8501:8501"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres_memoire:5432/memoire
-      - OPENAI_API_KEY=${OPENAI_API_KEY} # Remplace par ta clé API
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/memoire
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on:
-      - postgres_memoire
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline_network
   # 
   
   #  MLflow Server : Version corrigée avec variables d'environnement Gunicorn
