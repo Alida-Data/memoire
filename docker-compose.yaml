@@ -23,11 +23,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
+# Service Application Streamlit + Assistant IA
+  streamlit_app:
+    build: .
+    container_name: streamlit_app
+    restart: always
+    ports:
+      - "8501:8501" # Port d'accès à l'interface Web
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres_memoire:5432/memoire
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # Remplace par ta clé API
+    depends_on:
+      - postgres_memoire
   # 
   
   #  MLflow Server : Version corrigée avec variables d'environnement Gunicorn
-  # 🚀 MLflow Server : Configuration standard et stable
+  
   mlflow_server:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow_server_memoire
@@ -41,7 +52,7 @@ services:
       - pipeline_network
       
 
-  # 🛡️ MLflow Proxy (Nginx) : La version finale par montage de fichier (sans crash Windows)
+  #  MLflow Proxy (Nginx) : La version finale par montage de fichier (sans crash Windows)
   mlflow_proxy:
     image: nginx:alpine
     container_name: mlflow_proxy_memoire

@@ -10,4 +10,9 @@ apache-airflow
 apache-airflow-providers-http
 psycopg2-binary
 xgboost
+streamlit
+langchain
+langchain-openai
+langchain-community
+plotly
 imbalanced-learn>=0.10.0
