@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 import streamlit as st
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
@@ -13,7 +14,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Style CSS pour personnaliser les bulles de discussion (style moderne)
+# Style CSS pour personnaliser l'interface (bulles de chat et cartes)
 st.markdown("""
 <style>
     /* Style de la zone de chat */
@@ -42,19 +43,22 @@ st.markdown("""
 st.title("🛡️ Plateforme Anti-Fraude & Copilot IA")
 st.caption("Système intelligent de surveillance, d'alerte et d'analyse comportementale sur la couche Silver.")
 
-# Set ta clé API OpenAI (ou utilise une variable d'environnement)
-# os.environ["OPENAI_API_KEY"] = "sk-..."
-
 # ==========================================
 # 2. INITIALISATION DE L'AGENT LANGCHAIN
 # ==========================================
+# Lecture de la variable d'environnement transmise par Docker Compose
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/memoire")
+
 @st.cache_resource
 def load_sql_agent():
-    # Remplace par tes identifiants réels de base PostgreSQL
-    db_uri = "postgresql://postgres:password@localhost:5432/nom_de_ta_db"
-    
-    # Connexion à la BDD restreinte à ta table nettoyée
-    db = SQLDatabase.from_uri(db_uri, include_tables=['bank_transactions_cleaned'])
+    # Connexion sécurisée avec encodage client UTF-8
+    db = SQLDatabase.from_uri(
+        DATABASE_URL,
+        include_tables=['bank_transactions_cleaned'],
+        engine_args={
+            "connect_args": {"client_encoding": "utf8"}
+        }
+    )
     
     # Modèle LLM
     llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
@@ -110,9 +114,10 @@ with tab_copilot:
         with st.spinner("Analyse des requêtes SQL et réflexion de l'IA..."):
             if agent_ready:
                 try:
-                    response = copilot_agent.run(
-                        f"Tu es un expert anti-fraude bancaire. Réponds de manière claire et structurée en français. Question: {prompt}"
-                    )
+                    # Utilisation de .invoke() au lieu de .run() (nouvelle norme LangChain)
+                    query_text = f"Tu es un expert anti-fraude bancaire. Réponds de manière claire et structurée en français. Question: {prompt}"
+                    result = copilot_agent.invoke({"input": query_text})
+                    response = result.get("output", str(result))
                 except Exception as err:
                     response = f"Erreur lors de l'exécution : {err}"
             else:
