@@ -52,7 +52,23 @@ def load_db_and_llm():
         temperature=0,
         base_url="http://host.docker.internal:11434"
     )
-    chain = create_sql_query_chain(llm, db)
+    
+    # Prompt de génération de requête SQL
+    template = """En tant qu'expert PostgreSQL, génère uniquement la requête SQL pour répondre à la question suivante, sans aucun texte autour.
+Schéma : {schema}
+Question : {question}
+Requête SQL :"""
+    
+    prompt = PromptTemplate.from_template(template)
+    
+    # Chaîne native sans dépendance obsolète
+    chain = (
+        {"schema": lambda _: db.get_table_info(), "question": lambda x: x["question"]}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
     return db, llm, chain
 
 try:
