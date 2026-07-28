@@ -2,6 +2,8 @@ import os
 import urllib.parse
 import streamlit as st
 from langchain_community.utilities import SQLDatabase
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama import ChatOllama
 
 
@@ -108,7 +110,7 @@ with tab_copilot:
                         # 2. Exécution directe dans la BDD PostgreSQL
                         db_res = db.run(sql_query_clean)
                         
-                        # 3. Synthese en français avec le LLM
+                        # 3. Synthèse en français avec le LLM
                         synthesis_prompt = f"""
 Tu es un expert anti-fraude. 
 L'utilisateur a posé la question : "{prompt}".
