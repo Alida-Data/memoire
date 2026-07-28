@@ -12,7 +12,7 @@ from langchain_ollama import ChatOllama
 # ==========================================
 st.set_page_config(
     page_title="Copilot Anti-Fraude & Decision Support",
-    page_icon="🛡️",
+    page_icon="",
     layout="wide"
 )
 
@@ -32,7 +32,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ Plateforme Anti-Fraude & Copilot IA")
+st.title(" Plateforme Anti-Fraude & Copilot IA")
 st.caption("Système intelligent de surveillance, d'alerte et d'analyse comportementale sur la couche Silver.")
 
 # ==========================================
@@ -74,10 +74,10 @@ Requête SQL :"""
 try:
     db, llm, sql_chain = load_db_and_llm()
     agent_ready = True
-    st.sidebar.success("🟢 Connexion BDD & Ollama (Llama 3.2) OK")
+    st.sidebar.success(" Connexion BDD & Ollama (Llama 3.2) OK")
 except Exception as e:
     agent_ready = False
-    st.sidebar.warning(f"⚠️ Mode démo : {e}")
+    st.sidebar.warning(f" Mode démo : {e}")
 
 # ==========================================
 # 3. NAVIGATION MULTI-MODULES
@@ -92,7 +92,7 @@ tab_copilot, tab_alerts, tab_dg = st.tabs([
 # MODULE 1 : COPILOT & ASSISTANT IA
 # ------------------------------------------
 with tab_copilot:
-    st.subheader("💬 Assistant Conversationnel Analytique")
+    st.subheader(" Assistant Conversationnel Analytique")
     st.write("Interrogez la base de données sur les flux de transactions.")
 
     if "messages" not in st.session_state:
@@ -128,22 +128,28 @@ with tab_copilot:
                         
                         # 3. Synthèse en français avec le LLM
                         synthesis_prompt = f"""
-Tu es un expert anti-fraude. 
+Tu es un assistant analytique expert en détection de fraude.
 L'utilisateur a posé la question : "{prompt}".
 La requête SQL exécutée est : {sql_query_clean}
 Le résultat brut de la base de données est : {db_res}
 
 Rédige une réponse synthétique, professionnelle et claire en français pour répondre à la question.
+
+Règles de rédaction STRICTES :
+1. Réponds directement au format conversationnel (ne commence PAS par "Bonjour" ou "Cher utilisateur").
+2. Ne termine PAS par une formule de politesse d'e-mail (pas de "Cordialement", "N'hésitez pas à me contacter", ni de signature type "[Votre nom]").
+3. Donne le chiffre ou la réponse clé directement au début, puis apporte une courte explication/analyse si nécessaire.
+4. Formate clairement les grands nombres pour qu'ils soient faciles à lire (ex: 1 493 446 au lieu de 1493446).
 """
                         response = llm.invoke(synthesis_prompt).content
                         
                         # Affichage optionnel du SQL exécuté sous forme rétractable
-                        with st.expander("🔍 Requête SQL exécutée"):
+                        with st.expander(" Requête SQL exécutée"):
                             st.code(sql_query_clean, language="sql")
                             st.caption(f"Résultat BDD : {db_res}")
 
                     except Exception as err:
-                        response = f"⚠️ Erreur lors du traitement : {err}"
+                        response = f" Erreur lors du traitement : {err}"
                 else:
                     response = "[Mode Simulation] La connexion BDD/Ollama n'est pas active."
 
@@ -154,13 +160,13 @@ Rédige une réponse synthétique, professionnelle et claire en français pour r
 # MODULE 2 : CENTRE D'ALERTES SÉCURITÉ
 # ------------------------------------------
 with tab_alerts:
-    st.subheader("🚨 Flux de Transactions Suspectes (Temps Réel)")
+    st.subheader(" Flux de Transactions Suspectes (Temps Réel)")
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.error("🔴 **Alerte Critique (Score Risque XGBoost : 96.8%)**")
+        st.error(" **Alerte Critique (Score Risque XGBoost : 96.8%)**")
         st.write("**ID Transaction :** TX-984201 | **Montant :** 185 000 FCFA | **Heure :** 02:41 AM")
     with col_b:
-        st.button("🚫 Bloquer la Carte", key="btn_block")
+        st.button(" Bloquer la Carte", key="btn_block")
         st.button("✅ Approuver", key="btn_app")
 
 # ------------------------------------------
