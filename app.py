@@ -3,7 +3,7 @@ import urllib.parse
 import streamlit as st
 from langchain_community.utilities import SQLDatabase
 from langchain_ollama import ChatOllama
-from langchain.chains.sql_database.query import create_sql_query_chain
+
 
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE & DESIGN
