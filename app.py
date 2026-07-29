@@ -12,7 +12,7 @@ from langchain_ollama import ChatOllama
 # ==========================================
 st.set_page_config(
     page_title="Copilot Anti-Fraude & Decision Support",
-    page_icon="",
+    page_icon="🛡️",
     layout="wide"
 )
 
@@ -53,9 +53,17 @@ def load_db_and_llm():
         base_url="http://host.docker.internal:11434"
     )
     
-    # Prompt de génération de requête SQL
-    template = """En tant qu'expert PostgreSQL, génère uniquement la requête SQL pour répondre à la question suivante, sans aucun texte autour.
-Schéma : {schema}
+    # --- TEMPLATE SQL OPTIMISÉ (Règles de cohérence strictes) ---
+    template = """En tant qu'expert PostgreSQL et anti-fraude, génère uniquement la requête SQL valide pour répondre à la question.
+
+Règles de cohérence STRICTES :
+1. La colonne `is_fraud` contient 1 pour une fraude et 0 pour une transaction normale.
+2. Pour calculer le NOMBRE DE FRAUDES, utilise TOUJOURS `SUM(is_fraud)` ou `COUNT(*)` avec la clause `WHERE is_fraud = 1`. Ne fais JAMAIS un simple `COUNT(*)` sans filtrer sur la fraude.
+3. Pour les requêtes temporelles (par mois, par jour), groupe par la période et ordonne par le volume de fraudes décroissant (`ORDER BY ... DESC LIMIT 1`).
+4. N'utilise PAS `CURRENT_DATE` car les données sont historiques.
+5. Retourne uniquement la requête SQL, sans balises markdown ni explications.
+
+Schéma de la base : {schema}
 Question : {question}
 Requête SQL :"""
     
@@ -140,6 +148,7 @@ Règles de rédaction STRICTES :
 2. Ne termine PAS par une formule de politesse d'e-mail (pas de "Cordialement", "N'hésitez pas à me contacter", ni de signature type "[Votre nom]").
 3. Donne le chiffre ou la réponse clé directement au début, puis apporte une courte explication/analyse si nécessaire.
 4. Formate clairement les grands nombres pour qu'ils soient faciles à lire (ex: 1 493 446 au lieu de 1493446).
+5. Vérifie la cohérence du résultat brut : répercute fidèlement la valeur fournie dans `db_res` sans l'inventer ni la confondre avec le volume total.
 """
                         response = llm.invoke(synthesis_prompt).content
                         
@@ -166,7 +175,7 @@ with tab_alerts:
         st.error(" **Alerte Critique (Score Risque XGBoost : 96.8%)**")
         st.write("**ID Transaction :** TX-984201 | **Montant :** 185 000 FCFA | **Heure :** 02:41 AM")
     with col_b:
-        st.button(" Bloquer la Carte", key="btn_block")
+        st.button("🚫 Bloquer la Carte", key="btn_block")
         st.button("✅ Approuver", key="btn_app")
 
 # ------------------------------------------
