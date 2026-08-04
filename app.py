@@ -11,7 +11,7 @@ from langchain_ollama import ChatOllama
 # 1. CONFIGURATION DE LA PAGE & DESIGN
 # ==========================================
 st.set_page_config(
-    page_title="Copilot Anti-Fraude & Decision Support",
+    page_title=" Anti-Fraude & Decision Support",
     page_icon="🛡️",
     layout="wide"
 )
@@ -53,17 +53,19 @@ def load_db_and_llm():
         base_url="http://host.docker.internal:11434"
     )
     
-    # --- TEMPLATE SQL OPTIMISÉ (Règles de cohérence strictes) ---
+        
+    # --- TEMPLATE SQL STRICT SE BASANT EXCLUSIVEMENT SUR LE SCHEMA ---
     template = """En tant qu'expert PostgreSQL et anti-fraude, génère uniquement la requête SQL valide pour répondre à la question.
 
-Règles de cohérence STRICTES :
-1. La colonne `is_fraud` contient 1 pour une fraude et 0 pour une transaction normale.
-2. Pour calculer le NOMBRE DE FRAUDES, utilise TOUJOURS `SUM(is_fraud)` ou `COUNT(*)` avec la clause `WHERE is_fraud = 1`. Ne fais JAMAIS un simple `COUNT(*)` sans filtrer sur la fraude.
-3. Pour les requêtes temporelles (par mois, par jour), groupe par la période et ordonne par le volume de fraudes décroissant (`ORDER BY ... DESC LIMIT 1`).
-4. N'utilise PAS `CURRENT_DATE` car les données sont historiques.
-5. Retourne uniquement la requête SQL, sans balises markdown ni explications.
+Schéma réel et complet de la table :
+{schema}
 
-Schéma de la base : {schema}
+Règles STRICTES de génération :
+1. Inspecte ATTENTIVEMENT le schéma ci-dessus. N'utilise JAMAIS une colonne qui n'y figure pas (ne devine JAMAIS `job`, `category`, etc.).
+2. Pour la RÉPARTITION PAR TYPE / CATÉGORIE / MARCHAND : Utilise la colonne textuelle du schéma qui représente le secteur, le type ou le marchand (ex: `category` ou `merchant` ou similaire présent dans le schéma). Groupe par cette colonne (`GROUP BY`) et fais `SUM(is_fraud)`.
+3. Pour la RÉPARTITION PAR MOIS : Extrais le mois du champ date/timestamp du schéma (ex: `TO_CHAR(date_col, 'YYYY-MM')`) et fais `SUM(is_fraud)`.
+4. Ne mets aucun texte autour, retourne UNIQUEMENT le code SQL brut.
+
 Question : {question}
 Requête SQL :"""
     
@@ -91,7 +93,7 @@ except Exception as e:
 # 3. NAVIGATION MULTI-MODULES
 # ==========================================
 tab_copilot, tab_alerts, tab_dg = st.tabs([
-    "🤖 Copilot IA (Analyst Assistant)",
+    "🤖  IA (Analyst Assistant)",
     "🚨 Centre d'Alertes Sécurité",
     "📊 Vue Décisionnelle (DG)"
 ])
@@ -141,14 +143,12 @@ L'utilisateur a posé la question : "{prompt}".
 La requête SQL exécutée est : {sql_query_clean}
 Le résultat brut de la base de données est : {db_res}
 
-Rédige une réponse synthétique, professionnelle et claire en français pour répondre à la question.
+Rédige une réponse synthétique, professionnelle et concise en français.
 
 Règles de rédaction STRICTES :
-1. Réponds directement au format conversationnel (ne commence PAS par "Bonjour" ou "Cher utilisateur").
-2. Ne termine PAS par une formule de politesse d'e-mail (pas de "Cordialement", "N'hésitez pas à me contacter", ni de signature type "[Votre nom]").
-3. Donne le chiffre ou la réponse clé directement au début, puis apporte une courte explication/analyse si nécessaire.
-4. Formate clairement les grands nombres pour qu'ils soient faciles à lire (ex: 1 493 446 au lieu de 1493446).
-5. Vérifie la cohérence du résultat brut : répercute fidèlement la valeur fournie dans `db_res` sans l'inventer ni la confondre avec le volume total.
+1. Sois ultra-concis et réponds directement avec les résultats sous forme de liste à puces.
+2. Ne mets PAS de disclaimer de conclusion (pas de "Il est important de noter...", "Il convient de souligner...", ni de proposition d'aide).
+3. Formate les chiffres avec des espaces pour les milliers (ex: 1 445 566).
 """
                         response = llm.invoke(synthesis_prompt).content
                         

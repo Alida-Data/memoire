@@ -15,7 +15,7 @@ import uvicorn
 import traceback
 from imblearn.combine import SMOTETomek  # Pour surmonter le déséquilibre extrême
 
-# Désactiver l'interface graphique de Matplotlib pour éviter les bugs de mémoire dans Docker
+
 import matplotlib
 matplotlib.use('Agg')
 
@@ -30,22 +30,26 @@ class DataTransformer:
 
     def _anonymize_card(self, card_number) -> str:
         if pd.notnull(card_number):
-            return hashlib.sha256(str(card_number).encode()).hexdigest()
+            salt = os.getenv("HASH_SALT", "SecretKey123").encode('utf-8')
+            return hashlib.sha256(str(card_number).encode('utf-8') + salt).hexdigest()
         return None
 
     def clean_chunk(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
+        # 1. Suppression des colonnes parasites
         for col in df.columns:
             if df[col].astype(str).str.contains('num_transactions').any():
                 print(f"[WARNING] Colonne parasite supprimée du traitement : {col}")
                 df = df.drop(columns=[col])
 
+        # 2. Déduplication
         if 'transaction_id' in df.columns:
             df = df.drop_duplicates(subset=['transaction_id'], keep='first')
         else:
             df = df.drop_duplicates()
             
+        # 3. Nettoyage de la cible is_fraud
         if 'is_fraud' in df.columns:
             df = df.dropna(subset=['is_fraud'])
             def convert_fraud_val(val):
@@ -60,10 +64,33 @@ class DataTransformer:
             if not df.empty:
                 df['is_fraud'] = df['is_fraud'].astype(int)
                 
+        # 4. PPDA : Hachage salé des cartes bancaires (supporte 'card_number' et 'cc_num')
         if 'card_number' in df.columns:
             df['card_number'] = df['card_number'].apply(self._anonymize_card)
+        elif 'cc_num' in df.columns:
+            df['cc_num'] = df['cc_num'].apply(self._anonymize_card)
+
+        # 5. PPDA : Floutage GPS / K-Anonymat (Arrondi à 1 décimale ~11km)
+        if 'lat' in df.columns and 'long' in df.columns:
+            df['lat'] = df['lat'].round(1)
+            df['long'] = df['long'].round(1)
             
         return df
+
+    def run_pipeline(self) -> str:
+        if not os.path.exists(self.raw_path):
+            print(f"[WARNING] Fichier brut {self.raw_path} non trouvé. Étape ignorée.")
+            return None
+        if os.path.exists(self.cleaned_path):
+            os.remove(self.cleaned_path)
+            
+        is_first_chunk = True
+        for chunk in pd.read_csv(self.raw_path, chunksize=self.chunk_size):
+            cleaned_chunk = self.clean_chunk(chunk)
+            if not cleaned_chunk.empty:
+                cleaned_chunk.to_csv(self.cleaned_path, mode='a', index=False, header=is_first_chunk)
+                is_first_chunk = False
+        return self.cleaned_path
 
     def run_pipeline(self) -> str:
         if not os.path.exists(self.raw_path):
@@ -197,7 +224,7 @@ class ModelTrainer:
 
                 # 2. Courbe ROC
                 plt.figure(figsize=(6, 6))
-                fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+                fpr, tpr, _ = roc_curve(y_test, y_pred)
                 roc_auc = auc(fpr, tpr)
                 plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
                 plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
