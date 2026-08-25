@@ -8,7 +8,7 @@ scikit-learn
 mlflow
 apache-airflow
 apache-airflow-providers-http
-
+starlette<1.0.0
 xgboost
 streamlit
 langchain
@@ -16,3 +16,10 @@ langchain-ollama
 langchain-community
 plotly
 imbalanced-learn>=0.10.0
+chromadb
+fastembed
+minio
+qdrant-client
+pypdf
+google-cloud-storage
+prometheus-fastapi-instrumentator>=6.0.0

@@ -3,6 +3,7 @@ import pandas as pd
 import psycopg2
 from psycopg2 import extras
 from fastapi import FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
 
 class PostgresLoader:
@@ -126,7 +127,7 @@ class PostgresLoader:
 # =====================================================================
 
 app = FastAPI(title="Load Microservice")
-
+Instrumentator().instrument(app).expose(app)
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
     "postgresql://postgres:postgres@postgres_memoire:5432/memoire"

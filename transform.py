@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 import uvicorn
 import traceback
 from imblearn.combine import SMOTETomek  # Pour surmonter le déséquilibre extrême
-
+from prometheus_fastapi_instrumentator import Instrumentator
 
 import matplotlib
 matplotlib.use('Agg')
@@ -223,15 +223,20 @@ class ModelTrainer:
                 plt.close()
 
                 # 2. Courbe ROC
-                plt.figure(figsize=(6, 6))
-                fpr, tpr, _ = roc_curve(y_test, y_pred)
+                plt.figure(figsize=(6, 5), dpi=300)
+                fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
                 roc_auc = auc(fpr, tpr)
-                plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
-                plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-                plt.xlabel('Taux de Faux Positifs')
-                plt.ylabel('Taux de Vrais Positifs')
-                plt.title("Courbe ROC - Version Haute Précision")
-                plt.legend(loc="lower right")
+                plt.plot(fpr, tpr, color="#ff8c00", lw=2.5) 
+                plt.plot([0, 1], [0, 1], color="#000080", lw=2, linestyle="--")
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.title("Courbe ROC - Version Haute Précision", fontsize=12, pad=10)
+                plt.xlabel("Taux de Faux Positifs", fontsize=11)
+                plt.ylabel("Taux de Vrais Positifs", fontsize=11)
+                plt.grid(False)
+                
+            
+                plt.tight_layout()
                 plt.savefig(roc_path, bbox_inches='tight')
                 mlflow.log_artifact(roc_path)
                 plt.close()
@@ -244,7 +249,7 @@ class ModelTrainer:
 # SERVICE API (FastAPI)
 # =====================================================================
 app = FastAPI(title="ML Modeling Microservice")
-
+Instrumentator().instrument(app).expose(app)
 @app.post("/load-raw")
 def load_raw():
     """Déclenche l'import direct du CSV brut dans la table public.bank_transactions."""

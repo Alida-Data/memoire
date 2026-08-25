@@ -3,17 +3,21 @@ import requests
 import zipfile
 import shutil
 from fastapi import FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
+from google.cloud import storage
 
 class KaggleExtractor:
     """Classe responsable de l'extraction de datasets via l'API REST de Kaggle."""
     
-    def __init__(self, username: str, api_key: str, dataset_url: str, output_dir: str = "/data", filename: str = "raw_data.csv"):
+    def __init__(self, username: str, api_key: str, dataset_url: str, bucket_name: str, output_dir: str = "/data", filename: str = "raw_data.csv"):
         self.username = username
         self.api_key = api_key
         self.dataset_url = dataset_url
+        self.bucket_name = bucket_name  # <-- Ligne ajoutée
         self.output_dir = output_dir
         self.destination_file = os.path.join(self.output_dir, filename)
+        self.filename = filename        # <-- Ligne ajoutée
         self.zip_path = os.path.join(self.output_dir, "dataset.zip")
 
     def _prepare_directory(self):
@@ -48,6 +52,15 @@ class KaggleExtractor:
             with zip_ref.open(source_csv) as source, open(self.destination_file, 'wb') as target:
                 shutil.copyfileobj(source, target)
 
+    def upload_to_gcs(self):
+        """Téléverse le fichier CSV local brut vers le bucket Google Cloud Storage."""
+        print(f"[INFO] Envoi des données brutes vers le bucket Google Cloud Storage '{self.bucket_name}'...")
+        client = storage.Client()
+        bucket = client.bucket(self.bucket_name)
+        blob = bucket.blob(self.filename)
+        blob.upload_from_filename(self.destination_file)
+        print(f"[SUCCESS] Fichier {self.destination_file} téléversé dans {self.bucket_name}/{self.filename}.")
+
     def clean_temporary_files(self):
         """Supprime les résidus du téléchargement (.zip)."""
         if os.path.exists(self.zip_path):
@@ -59,6 +72,7 @@ class KaggleExtractor:
         try:
             self.download_zip()
             self.extract_csv()
+            self.upload_to_gcs()  # <-- Ligne ajoutée
             print(f"[SUCCESS] Données extraites et déplacées dans : {self.destination_file}")
             return self.destination_file
         finally:
@@ -70,6 +84,7 @@ class KaggleExtractor:
 # =====================================================================
 
 app = FastAPI(title="Extract Microservice")
+Instrumentator().instrument(app).expose(app)
 
 # Vos identifiants et configuration réels de production
 KAGGLE_USER = "sopiealidandin"
@@ -77,10 +92,12 @@ KAGGLE_KEY = "KGAT_126cf48b86c24cb9f22c64b91b49c054"
 DATASET_API_URL = "https://www.kaggle.com/api/v1/datasets/download/ismetsemedov/transactions"
 
 # Instance unique configurée pour l'environnement Docker
+GCP_BUCKET_NAME = "memoire-rag-docs-bucket"
 extractor = KaggleExtractor(
     username=KAGGLE_USER,
     api_key=KAGGLE_KEY,
     dataset_url=DATASET_API_URL,
+    bucket_name=GCP_BUCKET_NAME, # <-- Ligne ajoutée
     output_dir="/data",          # Volume partagé Docker
     filename="raw_data.csv"
 )

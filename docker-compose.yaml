@@ -145,9 +145,7 @@ services:
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
-  # Orchestrateur Airflow - Interface Web
-  # Orchestrateur Airflow - Interface Web
-  # Orchestrateur Airflow - Interface Web
+  
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.10
     container_name: airflow_webserver_memoire
@@ -198,11 +196,91 @@ services:
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
+      # ---------------------------------------------------
+  # SERVICES DE MONITORING & OBSERVABILITÉ (MLOps)
+  # ---------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus_memoire
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - pipeline_network
+
+  # Microservice RAG Assistant
+  rag_assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile.rag
+    container_name: rag_assistant_memoire
+    volumes:
+      - ./rag_docs:/app/rag_docs
+      - chroma_data:/app/chroma_db
+    networks:
+      - pipeline_network
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana_memoire
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - pipeline_network
+
+
+  # Base Vectorielle High-Performance
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_memoire
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - pipeline_network
+
+  # Stockage Objet S3-compatible pour les documents
+  minio:
+    image: minio/minio:latest
+    container_name: minio_memoire
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - pipeline_network
 volumes:
   postgres_data_v5:
   shared_data:
   mlflow_data:
+  prometheus_data:
+  grafana_data:
+  chroma_data:
+  qdrant_data:
+  minio_data:
 
 networks:
   pipeline_network:
+    driver: bridge
+  app-network:
     driver: bridge
