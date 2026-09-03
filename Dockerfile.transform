@@ -2,12 +2,12 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# 1. Copier et installer les dépendances (met en cache l'installation)
-COPY requirements.txt .
+# 1. Copier et installer les dépendances
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2. Copier explicitement les scripts (Ligne pipeline_ml.py supprimée 🟢)
-COPY transform.py /app/
+# 2. Copier le script de transformation
+COPY backend/transform.py /app/transform.py
 
 # 3. Lancer le serveur Uvicorn
 CMD ["uvicorn", "transform:app", "--host", "0.0.0.0", "--port", "8000"]

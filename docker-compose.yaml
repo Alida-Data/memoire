@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   # Base de données PostgreSQL pour le pipeline, Airflow et MLflow
@@ -23,41 +23,30 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-# Service Application Streamlit + Assistant IA
-  streamlit_app:
-    build:
-      context: .
-      dockerfile: Dockerfile.app  # <-- Utilise ton Dockerfile général
-    container_name: streamlit_app
-    restart: always
+
+  # Interface Frontend React (Vite)
+  frontend_react:
+    build: ./frontend
+    container_name: frontend_react_memoire
+    tty: true
     ports:
-      - "8501:8501"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/memoire
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - "5173:5173"
     networks:
       - pipeline_network
-  # 
-  
-  #  MLflow Server : Version corrigée avec variables d'environnement Gunicorn
-  
+
+  # MLflow Server
   mlflow_server:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow_server_memoire
     environment:
       - MLFLOW_HTTP_PROXY_ALLOW_ALL=True
-    #  CORRECTION : On isole sqlite dans /mlruns/metadata et les graphiques/modèles dans /mlruns/artifacts
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlruns/metadata/mlflow.db --default-artifact-root /mlruns/artifacts
     volumes:
       - mlflow_data:/mlruns
     networks:
       - pipeline_network
-      
 
-  #  MLflow Proxy (Nginx) : La version finale par montage de fichier (sans crash Windows)
+  # MLflow Proxy (Nginx)
   mlflow_proxy:
     image: nginx:alpine
     container_name: mlflow_proxy_memoire
@@ -69,6 +58,7 @@ services:
       - mlflow_server
     networks:
       - pipeline_network
+
   # Microservice 1 : Extraction
   extract-service:
     build: { context: ., dockerfile: Dockerfile.extract }
@@ -88,7 +78,7 @@ services:
         aliases:
           - extract-service
 
-  # 
+  # Microservice 2 : Transformation
   transform-service:
     build:
       context: .
@@ -99,7 +89,6 @@ services:
       - "8002:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/memoire
-      #  On cible le proxy qui va corriger l'en-tête à la volée !
       - MLFLOW_TRACKING_URI=http://mlflow_proxy:5000
     volumes:
       - shared_data:/data
@@ -111,6 +100,7 @@ services:
       pipeline_network:
         aliases:
           - transform-service
+
   # Microservice 3 : Chargement
   load-service:
     build: { context: ., dockerfile: Dockerfile.load }
@@ -128,7 +118,7 @@ services:
         aliases:
           - load-service
 
-  # Initialiser la base de données d'Airflow au démarrage
+  # Initialiser la base de données d'Airflow
   airflow-init:
     image: apache/airflow:2.7.3-python3.10
     container_name: airflow_init_memoire
@@ -139,13 +129,12 @@ services:
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/memoire
-      # Ajout des variables de secours pour brider la consommation de RAM :
       - AIRFLOW__WEBSERVER__WORKERS=1
       - AIRFLOW__SCHEDULER__PARALLELISM=2
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
-  
+
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.10
     container_name: airflow_webserver_memoire
@@ -173,7 +162,6 @@ services:
     networks:
       - pipeline_network
 
-  # Le Planificateur Airflow
   airflow-scheduler:
     image: apache/airflow:2.7.3-python3.10
     container_name: airflow_scheduler_memoire
@@ -196,8 +184,9 @@ services:
       - AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
     networks:
       - pipeline_network
-      # ---------------------------------------------------
-  # SERVICES DE MONITORING & OBSERVABILITÉ (MLOps)
+
+  # ---------------------------------------------------
+  # SERVICES DE MONITORING & OBSERVABILITÉ
   # ---------------------------------------------------
 
   prometheus:
@@ -214,7 +203,6 @@ services:
     networks:
       - pipeline_network
 
-  # Microservice RAG Assistant
   rag_assistant:
     build:
       context: .
@@ -226,7 +214,6 @@ services:
     networks:
       - pipeline_network
 
-  # Grafana
   grafana:
     image: grafana/grafana:latest
     container_name: grafana_memoire
@@ -242,8 +229,6 @@ services:
     networks:
       - pipeline_network
 
-
-  # Base Vectorielle High-Performance
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant_memoire
@@ -254,7 +239,6 @@ services:
     networks:
       - pipeline_network
 
-  # Stockage Objet S3-compatible pour les documents
   minio:
     image: minio/minio:latest
     container_name: minio_memoire
@@ -269,6 +253,7 @@ services:
       - minio_data:/data
     networks:
       - pipeline_network
+
 volumes:
   postgres_data_v5:
   shared_data:
