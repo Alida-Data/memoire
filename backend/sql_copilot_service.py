@@ -2,13 +2,21 @@ import os
 import psycopg2
 
 def get_db_connection():
-    """Établit la connexion avec la base de données PostgreSQL (basée sur DBeaver)"""
+    """Établit la connexion avec la base de données PostgreSQL.
+
+    Valeurs par défaut adaptées à main.py qui tourne DIRECTEMENT SUR
+    WINDOWS (hors Docker) : 127.0.0.1:5433, le port que docker-compose.yml
+    mappe vers le conteneur postgres_memoire ("ports: - 5433:5432").
+    "postgres_memoire" et le port 5432 ne sont résolvables/accessibles que
+    DEPUIS L'INTÉRIEUR du réseau Docker (ex. depuis transform-service) —
+    jamais depuis un script lancé sur l'hôte.
+    """
     return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        database=os.getenv("DB_NAME", "memoire"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", "postgres"),
-        port=os.getenv("DB_PORT", "5433")
+        host=os.getenv("POSTGRES_HOST", os.getenv("DB_HOST", "127.0.0.1")),
+        database=os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "memoire")),
+        user=os.getenv("POSTGRES_USER", os.getenv("DB_USER", "postgres")),
+        password=os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "postgres")),
+        port=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5433"))
     )
 
 def executer_copilot_sql(prompt_ou_query: str):

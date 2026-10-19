@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import IndicatorsView from './IndicatorsView';
 import {
   ShieldCheck,
   Bot,
@@ -21,6 +22,20 @@ import {
 
 const API_BASE_URL = "http://localhost:8000/api/v1";
 
+// FastAPI renvoie `detail` sous forme de simple texte la plupart du temps,
+// mais sous forme de LISTE d'objets pour les erreurs de validation
+// automatiques (422) — sans ce garde-fou, ça affichait juste
+// "[object Object]" au lieu du vrai message.
+function formatApiError(err, status) {
+  const d = err?.detail;
+  if (!d) return `HTTP ${status}`;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    return d.map(item => item.msg ? `${(item.loc || []).join('.')}: ${item.msg}` : JSON.stringify(item)).join(' ; ');
+  }
+  return JSON.stringify(d);
+}
+
 const NAV_ITEMS = [
   { id: 'copilot', label: 'Transactions', icon: Database },
   { id: 'risk', label: 'Score de risque', icon: Gauge },
@@ -29,7 +44,13 @@ const NAV_ITEMS = [
   { id: 'dg', label: 'Indicateurs', icon: BarChart3 },
 ];
 
-const TX_TYPES = ['TRANSFER', 'CASH_OUT', 'PAYMENT', 'CASH_IN', 'DEBIT'];
+const MERCHANT_TYPES = ['physical', 'online', 'transport', 'medical', 'major', 'airlines', 'casual', 'booking'];
+const CARD_TYPES = ['Basic Debit', 'Basic Credit', 'Gold Credit', 'Platinum Credit', 'Premium Debit'];
+const DEVICES = ['Chrome', 'Firefox', 'Safari', 'Edge', 'iOS App', 'Android App', 'Magnetic Stripe'];
+const CHANNELS = ['web', 'mobile', 'pos'];
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'AUD', 'SGD', 'MXN', 'NGN', 'RUB'];
+const COUNTRIES = ['USA', 'UK', 'Australia', 'Singapore', 'Mexico', 'Nigeria', 'Russia', 'Germany'];
+const CITY_SIZES = ['small', 'medium', 'large'];
 
 const ROLES = [
   { id: 'analyst', label: 'Analyste' },
@@ -38,34 +59,25 @@ const ROLES = [
 ];
 
 // Simulation heuristique locale — pas un modèle entraîné.
-// Chaque règle reproduit un signal classique de fraude (comptes vidés,
-// compte destinataire "mule", incohérence de soldes, etc.) et retourne
-// une contribution positive (pousse vers "frauduleuse") ou négative
-// (pousse vers "légitime"), comme une décomposition de type SHAP.
-function computeRiskScore({ txType, amount, oldBalanceOrig, newBalanceOrig, oldBalanceDest, newBalanceDest, hour, isFlagged }) {
+function computeRiskScore({ amount, cardPresent, device, velocityLastHour, highRiskMerchant, transactionHour, weekendTransaction, channel }) {
   const amt = Number(amount) || 0;
-  const oBO = Number(oldBalanceOrig) || 0;
-  const nBO = Number(newBalanceOrig) || 0;
-  const oBD = Number(oldBalanceDest) || 0;
-  const nBD = Number(newBalanceDest) || 0;
-  const h = Number(hour) || 0;
-  const flagged = Number(isFlagged) === 1;
-
-  const ratio = oBO > 0 ? amt / oBO : (amt > 0 ? 1 : 0);
-  const expectedNewBO = oBO - amt;
-  const mismatch = Math.abs(expectedNewBO - nBO) > Math.max(1, amt * 0.01);
-  const destEmpty = oBD === 0 && nBD === 0 && amt > 0;
-  const riskyType = txType === 'TRANSFER' || txType === 'CASH_OUT';
-  const nightHour = h <= 5;
+  const velocity = Number(velocityLastHour) || 0;
+  const h = Number(transactionHour) || 0;
+  const isHighRisk = Number(highRiskMerchant) === 1;
+  const isWeekend = Number(weekendTransaction) === 1;
+  const cardNotPresent = Number(cardPresent) !== 1;
+  const nightHour = h <= 5 || h >= 22;
+  const highVelocity = velocity >= 3;
+  const posMagStripe = device === 'Magnetic Stripe';
 
   const contributions = [
-    { name: 'ratio_montant_solde', display: `${ratio.toFixed(2)} = ratio_montant_solde`, value: ratio > 0.85 ? 0.85 : ratio > 0.5 ? 0.35 : -0.25 },
-    { name: 'oldbalanceDest', display: `${oBD} = oldbalanceDest`, value: destEmpty ? 0.9 : -0.2 },
-    { name: 'newbalanceOrig', display: `${nBO} = newbalanceOrig`, value: mismatch ? 0.5 : -0.4 },
-    { name: 'type', display: `${txType} = type`, value: riskyType ? 0.3 : -0.5 },
-    { name: 'hour', display: `${h} = hour`, value: nightHour ? 0.25 : -0.1 },
-    { name: 'montant', display: `${amt} = montant`, value: amt > 200000 ? 0.3 : -0.1 },
-    { name: 'isFlaggedFraud', display: `${flagged ? 1 : 0} = isFlaggedFraud`, value: flagged ? 2.0 : -0.1 },
+    { name: 'montant', display: `${amt} = montant`, value: amt > 5000 ? 0.6 : amt > 1000 ? 0.15 : -0.2 },
+    { name: 'high_risk_merchant', display: `${isHighRisk ? 1 : 0} = high_risk_merchant`, value: isHighRisk ? 0.9 : -0.3 },
+    { name: 'velocity_last_hour', display: `${velocity} = velocity_last_hour`, value: highVelocity ? 0.7 : velocity >= 1 ? 0.1 : -0.2 },
+    { name: 'card_present', display: `${cardPresent} = card_present`, value: cardNotPresent ? 0.35 : -0.3 },
+    { name: 'transaction_hour', display: `${h} = transaction_hour`, value: nightHour ? 0.3 : -0.15 },
+    { name: 'weekend_transaction', display: `${isWeekend ? 1 : 0} = weekend_transaction`, value: isWeekend ? 0.15 : -0.1 },
+    { name: 'device', display: `${device} = device`, value: posMagStripe ? 0.2 : -0.1 },
   ].sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 
   const intercept = -1.6;
@@ -93,47 +105,244 @@ function StatCard({ label, value, sub, tone = 'neutral' }) {
 export default function App() {
   const [activeTab, setActiveTab] = useState('copilot');
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [userRole, setUserRole] = useState('analyst');
+  const [userRole, setUserRole] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUsername, password: loginPassword }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(formatApiError(err, res.status) || 'Identifiants invalides');
+      }
+      const data = await res.json();
+      setUserRole(data.role);
+      setIsAuthenticated(true);
+    } catch (err) {
+      setLoginError(err.message || "Impossible de se connecter à l'API");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setUserRole(null);
+    setLoginUsername('');
+    setLoginPassword('');
+  };
 
   const [fileToUpload, setFileToUpload] = useState(null);
   const [uploadStatus, setUploadStatus] = useState('');
+  const [documents, setDocuments] = useState([]);
+  const [documentsError, setDocumentsError] = useState(null);
+  const [removingDoc, setRemovingDoc] = useState(null);
+
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/documents`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setDocuments(data.documents || []);
+      setDocumentsError(null);
+    } catch (err) {
+      setDocumentsError(err.message || 'API indisponible');
+    }
+  };
+
+  const removeDocument = async (filename) => {
+    setRemovingDoc(filename);
+    try {
+      const res = await fetch(`${API_BASE_URL}/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(formatApiError(err, res.status));
+      }
+      await fetchDocuments();
+    } catch (err) {
+      setDocumentsError(err.message || 'API indisponible');
+    } finally {
+      setRemovingDoc(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
 
   const [sqlPrompt, setSqlPrompt] = useState('');
   const [sqlResult, setSqlResult] = useState(null);
   const [sqlLoading, setSqlLoading] = useState(false);
 
-  const [txType, setTxType] = useState('TRANSFER');
-  const [amount, setAmount] = useState(180000);
-  const [oldBalanceOrig, setOldBalanceOrig] = useState(180000);
-  const [newBalanceOrig, setNewBalanceOrig] = useState(0);
-  const [oldBalanceDest, setOldBalanceDest] = useState(0);
-  const [newBalanceDest, setNewBalanceDest] = useState(0);
-  const [hour, setHour] = useState(3);
-  const [isFlagged, setIsFlagged] = useState(0);
+  const [amount, setAmount] = useState(150);
+  const [merchantType, setMerchantType] = useState('physical');
+  const [currency, setCurrency] = useState('USD');
+  const [country, setCountry] = useState('USA');
+  const [citySize, setCitySize] = useState('medium');
+  const [cardType, setCardType] = useState('Basic Debit');
+  const [cardPresent, setCardPresent] = useState(0);
+  const [device, setDevice] = useState('Chrome');
+  const [channel, setChannel] = useState('web');
+  const [velocityLastHour, setVelocityLastHour] = useState(0);
+  const [highRiskMerchant, setHighRiskMerchant] = useState(0);
+  const [transactionHour, setTransactionHour] = useState(12);
+  const [weekendTransaction, setWeekendTransaction] = useState(0);
 
   const riskResult = useMemo(() => computeRiskScore({
-    txType, amount, oldBalanceOrig, newBalanceOrig, oldBalanceDest, newBalanceDest, hour, isFlagged
-  }), [txType, amount, oldBalanceOrig, newBalanceOrig, oldBalanceDest, newBalanceDest, hour, isFlagged]);
+    amount, cardPresent, device, velocityLastHour, highRiskMerchant, transactionHour, weekendTransaction, channel
+  }), [amount, cardPresent, device, velocityLastHour, highRiskMerchant, transactionHour, weekendTransaction, channel]);
 
-  // Statistiques du tableau de bord — évoluent à chaque transaction analysée,
-  // plutôt que d'être figées.
-  // Aucune valeur inventée ici : null tant que rien n'a été confirmé par
-  // la base de données réelle.
   const [analyzedCount, setAnalyzedCount] = useState(null);
   const [openAlerts, setOpenAlerts] = useState(null);
   const [amountAtRisk, setAmountAtRisk] = useState(null);
   const [lastLogged, setLastLogged] = useState(null);
-  // 'loading' → en attente de l'API · 'api' → vraies données reçues ·
-  // 'error' → l'API n'a pas répondu, aucune donnée à afficher.
   const [statsSource, setStatsSource] = useState('loading');
   const [statsLoading, setStatsLoading] = useState(true);
 
-  // Résultat renvoyé par le vrai modèle (endpoint FastAPI qui charge le
-  // modèle XGBoost depuis le registre MLflow). null tant qu'aucune analyse
-  // n'a été lancée.
   const [apiResult, setApiResult] = useState(null);
   const [apiLoading, setApiLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
+
+  const [sampleTransactions, setSampleTransactions] = useState([]);
+  const [samplesLoading, setSamplesLoading] = useState(false);
+  const [samplesError, setSamplesError] = useState(null);
+  const [loadedTransaction, setLoadedTransaction] = useState(null);
+
+  // Surveillance en direct SIMULÉE : rejoue des transactions historiques
+  // au hasard comme si elles venaient d'arriver, les fait scorer par le
+  // vrai modèle, et récupère les alertes générées automatiquement.
+  const [liveMonitoring, setLiveMonitoring] = useState(false);
+  const [alerts, setAlerts] = useState([]);
+  const [alertsError, setAlertsError] = useState(null);
+  const [liveStats, setLiveStats] = useState({ processed: 0, blocked: 0 });
+  const [lastTick, setLastTick] = useState(null);
+
+  const fetchAlerts = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/alerts?limit=20`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAlerts(data.alerts || []);
+      setAlertsError(null);
+    } catch (err) {
+      setAlertsError(err.message || 'API indisponible');
+    }
+  };
+
+  const runMonitorTick = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/live-monitor/tick?n=20`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setLastTick(data);
+      setLiveStats(s => ({ processed: s.processed + data.processed, blocked: s.blocked + data.blocked }));
+      await fetchAlerts();
+    } catch (err) {
+      setAlertsError(err.message || 'API indisponible');
+      setLiveMonitoring(false);
+    }
+  };
+
+  const resolveAlert = async (id) => {
+    try {
+      await fetch(`${API_BASE_URL}/alerts/${id}/resolve`, { method: 'POST' });
+      await fetchAlerts();
+    } catch (err) {
+      setAlertsError(err.message || 'API indisponible');
+    }
+  };
+
+  useEffect(() => {
+    fetchAlerts();
+  }, []);
+
+  useEffect(() => {
+    if (!liveMonitoring) return;
+    runMonitorTick();
+    const interval = setInterval(runMonitorTick, 4000);
+    return () => clearInterval(interval);
+  }, [liveMonitoring]);
+
+  const loadSampleTransactions = async () => {
+    setSamplesLoading(true);
+    setSamplesError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/sample-transactions?limit=50`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSampleTransactions(data.transactions || []);
+    } catch (err) {
+      setSamplesError(err.message || 'API indisponible');
+    } finally {
+      setSamplesLoading(false);
+    }
+  };
+const [copilotStats, setCopilotStats] = useState({
+    total_alertes: 0,
+    montant_a_risque: 0,
+    currency: 'XOF'
+  });
+  const [copilotLoading, setCopilotLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/copilot-kpis`)
+      .then((res) => res.json())
+      .then((data) => {
+        setCopilotStats(data);
+        setCopilotLoading(false);
+      })
+      .catch((err) => {
+        console.error("Erreur lors de la récupération des KPIs Copilot :", err);
+        setCopilotLoading(false);
+      });
+  }, []);
+
+  const formatAmount = (amount) => {
+    if (!amount) return '0';
+    if (amount >= 1e9) return `${(amount / 1e9).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mds`;
+    if (amount >= 1e6) return `${(amount / 1e6).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} M`;
+    return amount.toLocaleString('fr-FR');
+  };
+  
+  // Normalise un champ censé être 0/1 : l'API peut renvoyer un booléen
+  // (true/false, cas d'une colonne PostgreSQL de type boolean), un texte
+  // ("0"/"1"/"true"), ou déjà un entier. Sans cette normalisation, un
+  // booléen finit par être envoyé tel quel à /predict-fraud, que Pydantic
+  // rejette ("Input should be a valid integer").
+  const toBinary = (val) => {
+    if (val === true || val === 1 || val === '1' || val === 'true') return 1;
+    return 0;
+  };
+
+  const applySampleTransaction = (tx) => {
+    setAmount(tx.amount);
+    setMerchantType(tx.merchant_type ?? merchantType);
+    setCurrency(tx.currency ?? currency);
+    setCountry(tx.country ?? country);
+    setCitySize(tx.city_size ?? citySize);
+    setCardType(tx.card_type ?? cardType);
+    setCardPresent(toBinary(tx.card_present));
+    setDevice(tx.device ?? device);
+    setChannel(tx.channel ?? channel);
+    setVelocityLastHour(0);
+    setHighRiskMerchant(toBinary(tx.high_risk_merchant));
+    setTransactionHour(tx.transaction_hour ?? 12);
+    setWeekendTransaction(toBinary(tx.weekend_transaction));
+    setLoadedTransaction(tx);
+    setApiResult(null);
+    setApiError(null);
+  };
 
   const formatAmountM = (n) =>
     (n / 1000000).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' M';
@@ -142,19 +351,20 @@ export default function App() {
     setApiLoading(true);
     setApiError(null);
 
-    // Adaptez ces clés au schéma réellement attendu par votre endpoint
-    // FastAPI (les mêmes colonnes que celles utilisées à l'entraînement,
-    // avant le pd.get_dummies fait côté serveur).
     const payload = {
-      type: txType,
       amount: Number(amount) || 0,
-      oldbalanceOrg: Number(oldBalanceOrig) || 0,
-      newbalanceOrig: Number(newBalanceOrig) || 0,
-      oldbalanceDest: Number(oldBalanceDest) || 0,
-      newbalanceDest: Number(newBalanceDest) || 0,
-      hour: Number(hour) || 0,
-      isFlaggedFraud: Number(isFlagged) || 0,
-      user_role: userRole,
+      high_risk_merchant: Number(highRiskMerchant),
+      transaction_hour: Number(transactionHour),
+      weekend_transaction: Number(weekendTransaction),
+      velocity_last_hour: Number(velocityLastHour) || 0,
+      card_present: Number(cardPresent),
+      merchant_type: merchantType,
+      card_type: cardType,
+      device,
+      channel,
+      country,
+      city_size: citySize,
+      currency,
     };
 
     let decision, probability, source;
@@ -165,24 +375,18 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(formatApiError(err, res.status));
+      }
       const data = await res.json();
+      if (data.probability === undefined) throw new Error("Réponse inattendue de l'API");
 
-      // Tolère plusieurs formats de réponse possibles côté FastAPI.
-      const rawProb = data.probability ?? data.fraud_probability ?? data.score ?? null;
-      const rawDecision = data.decision ?? (
-        (data.prediction === 1 || data.is_fraud === true) ? 'FRAUDULEUSE' : 'LÉGITIME'
-      );
-      if (rawProb === null) throw new Error("Réponse inattendue de l'API");
-
-      probability = Number(rawProb);
-      decision = rawDecision;
+      probability = Number(data.probability);
+      decision = data.decision;
       source = 'api';
       setApiResult({ decision, probability, source });
     } catch (err) {
-      // Le modèle n'est pas encore joignable (endpoint absent, backend
-      // arrêté...) — on retombe sur l'estimation locale plutôt que de
-      // bloquer l'utilisateur, mais on le signale clairement.
       setApiError(err.message || 'API indisponible');
       decision = riskResult.decision;
       probability = riskResult.probability;
@@ -192,9 +396,6 @@ export default function App() {
       setApiLoading(false);
     }
 
-    // On ne fait évoluer les compteurs du tableau de bord que s'ils
-    // reposent sur de vraies données PostgreSQL — jamais sur un chiffre
-    // inventé, et jamais sur `null`.
     if (statsSource === 'api') {
       setAnalyzedCount(c => (c ?? 0) + 1);
       if (decision === 'FRAUDULEUSE') {
@@ -218,8 +419,6 @@ export default function App() {
       .catch(() => console.log("API non disponible actuellement"));
   }, []);
 
-  // Charge les vraies statistiques (comptages PostgreSQL) au démarrage.
-  // Adaptez l'URL/le format de réponse à votre route FastAPI réelle.
   useEffect(() => {
     let cancelled = false;
     setStatsLoading(true);
@@ -243,8 +442,6 @@ export default function App() {
       })
       .catch(() => {
         if (cancelled) return;
-        // Le backend ne fournit pas encore cette route : on n'invente pas
-        // de chiffres de remplacement, on affiche l'absence de données.
         setAnalyzedCount(null);
         setOpenAlerts(null);
         setAmountAtRisk(null);
@@ -278,6 +475,7 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         setUploadStatus(`Document indexé : ${data.gcs_uri}`);
+        await fetchDocuments();
       } else {
         setUploadStatus(`Échec de l'envoi : ${data.detail}`);
       }
@@ -376,7 +574,6 @@ export default function App() {
         .platform .mono { font-family: 'IBM Plex Mono', monospace; }
         .platform .display { font-family: 'Fraunces', serif; }
 
-        /* Sidebar */
         .sidebar {
           width: 236px;
           flex-shrink: 0;
@@ -497,7 +694,6 @@ export default function App() {
           color: var(--sb-text);
         }
 
-        /* Main */
         .main-col {
           flex: 1;
           min-width: 0;
@@ -564,7 +760,6 @@ export default function App() {
           line-height: 1.5;
         }
 
-        /* Stat cards */
         .stat-row {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
@@ -601,7 +796,6 @@ export default function App() {
         .stats-source-note.api { color: var(--success); }
         .stats-source-note.error { color: #9a6a12; }
 
-        /* Query form */
         .query-form { display: flex; gap: 10px; margin-bottom: 22px; }
         .query-input {
           flex: 1;
@@ -629,7 +823,6 @@ export default function App() {
         .btn-primary:hover { opacity: 0.88; }
         .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
-        /* Ledger table */
         .ledger {
           border: 1px solid var(--border);
           background: var(--panel);
@@ -673,7 +866,6 @@ export default function App() {
           font-size: 13px;
         }
 
-        /* Risk simulator */
         .risk-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
@@ -885,6 +1077,166 @@ export default function App() {
           padding: 0 4px;
         }
 
+        .sample-tx-block {
+          background: var(--panel-2);
+          border: 1px solid var(--border-soft);
+          border-radius: 6px;
+          padding: 12px;
+          margin-bottom: 18px;
+        }
+        .sample-tx-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text);
+          margin-bottom: 8px;
+        }
+        .sample-tx-error {
+          display: flex;
+          align-items: flex-start;
+          gap: 6px;
+          font-size: 11px;
+          color: #9a6a12;
+          margin: 6px 0 0 0;
+        }
+        .sample-tx-list {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          max-height: 260px;
+          overflow-y: auto;
+        }
+        .sample-tx-row {
+          display: grid;
+          grid-template-columns: 1.4fr 1fr 1fr 1fr;
+          gap: 8px;
+          background: var(--panel);
+          border: 1px solid var(--border-soft);
+          border-radius: 4px;
+          padding: 7px 9px;
+          font-size: 10.5px;
+          color: var(--text-muted);
+          cursor: pointer;
+          text-align: left;
+        }
+        .sample-tx-row:hover { border-color: var(--accent-dim); }
+        .sample-tx-row.active { border-color: var(--accent); background: var(--panel); }
+        .sample-tx-fraud { color: var(--danger); font-weight: 600; }
+        .sample-tx-ok { color: var(--success); font-weight: 600; }
+        .sample-tx-loaded {
+          font-size: 11px;
+          color: var(--text-muted);
+          margin: 10px 0 0 0;
+          line-height: 1.5;
+        }
+        .model-field .field-label { display: flex; align-items: center; gap: 8px; }
+        .model-tag {
+          font-size: 9.5px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+          color: var(--accent);
+          background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+          padding: 2px 7px;
+          border-radius: 999px;
+        }
+        .demo-fields-note {
+          font-size: 11px;
+          color: var(--text-faint);
+          font-style: italic;
+          margin: -6px 0 16px 0;
+        }
+        .ground-truth-note {
+          font-size: 11.5px;
+          padding: 9px 12px;
+          border-radius: 4px;
+          margin-top: 4px;
+          line-height: 1.5;
+        }
+        .ground-truth-note.match { background: var(--success-dim); color: #1f6b48; }
+        .ground-truth-note.mismatch { background: var(--danger-dim); color: #9c2f28; }
+
+        .monitor-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          box-shadow: var(--shadow);
+          padding: 14px 18px;
+          margin-bottom: 14px;
+        }
+        .btn-monitor {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          background: var(--accent);
+          color: var(--on-accent);
+          border: none;
+          padding: 10px 18px;
+          border-radius: 4px;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .btn-monitor.active { background: var(--danger); }
+        .monitor-dot {
+          width: 8px; height: 8px;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.6);
+        }
+        .monitor-dot.live { background: #fff; animation: pulse-dot 1.2s infinite; }
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+        .monitor-stats { font-size: 12.5px; color: var(--text-muted); }
+        .monitor-stats-sep { margin: 0 8px; color: var(--border); }
+        .monitor-stats-blocked { color: var(--danger); }
+
+        .alert-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+        .alert-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          background: var(--panel);
+          border: 1px solid var(--danger);
+          border-left-width: 3px;
+          border-radius: 6px;
+          padding: 12px 16px;
+          box-shadow: var(--shadow);
+        }
+        .alert-row.resolved { border-color: var(--border); opacity: 0.65; }
+        .alert-row-main { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-muted); }
+        .alert-badge {
+          background: var(--danger-dim);
+          color: #9c2f28;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.03em;
+          padding: 3px 8px;
+          border-radius: 999px;
+        }
+        .alert-tx { color: var(--text); font-weight: 600; }
+        .alert-amount { color: var(--text); }
+        .alert-score { color: var(--danger); font-weight: 600; }
+        .alert-row-side { display: flex; align-items: center; gap: 12px; }
+        .alert-time { font-size: 11px; color: var(--text-faint); }
+        .alert-status-done { font-size: 11.5px; color: var(--success); font-weight: 600; }
+        .btn-resolve {
+          background: var(--panel-2);
+          border: 1px solid var(--border);
+          color: var(--text);
+          font-size: 11.5px;
+          padding: 6px 12px;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .btn-resolve:hover { border-color: var(--accent-dim); }
+
         .disclaimer-banner {
           display: flex;
           align-items: flex-start;
@@ -899,7 +1251,6 @@ export default function App() {
           line-height: 1.5;
         }
 
-        /* Upload */
         .dropzone {
           border: 1px dashed var(--border);
           background: var(--panel);
@@ -946,7 +1297,6 @@ export default function App() {
           box-shadow: var(--shadow);
         }
 
-        /* Chat dock */
         .chat-dock {
           width: 340px;
           flex-shrink: 0;
@@ -1010,9 +1360,125 @@ export default function App() {
           display: flex; align-items: center; justify-content: center;
           cursor: pointer;
         }
+        .login-screen {
+          width: 100%;
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(150deg, var(--sb-bg-1, #081617) 0%, var(--sb-bg-2, #0c3a3b) 48%, var(--sb-bg-3, #12ab8d) 100%);
+        }
+        .login-card {
+          width: 360px;
+          background: var(--panel, #ffffff);
+          border-radius: 8px;
+          box-shadow: var(--shadow, 0 1px 2px rgba(16,24,40,0.04), 0 4px 10px rgba(16,24,40,0.05));
+          padding: 32px 30px;
+        }
+        .login-brand {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 26px;
+        }
+        .login-brand-mark {
+          width: 36px; height: 36px;
+          border-radius: 4px;
+          background: var(--panel-2, #f5f7fa);
+          border: 1px solid var(--accent-dim, #7fa9c4);
+          display: flex; align-items: center; justify-content: center;
+          color: var(--accent, #2e6b93);
+        }
+        .login-brand-name { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 500; color: var(--text, #1c2430); }
+        .login-brand-sub { font-size: 11px; color: var(--text-faint, #98a2b3); }
+        .login-field { margin-bottom: 14px; }
+        .login-label { display: block; font-size: 11.5px; color: var(--text-muted, #667085); margin-bottom: 6px; }
+        .login-input {
+          width: 100%;
+          background: var(--panel, #ffffff);
+          border: 1px solid var(--border, #e1e5eb);
+          border-radius: 4px;
+          padding: 10px 12px;
+          font-size: 13.5px;
+          color: var(--text, #1c2430);
+          box-sizing: border-box;
+        }
+        .login-input:focus { outline: none; border-color: var(--accent-dim, #7fa9c4); }
+        .login-error {
+          background: var(--danger-dim, #fbe4e2);
+          border: 1px solid var(--danger, #d6453d);
+          color: #9c2f28;
+          padding: 9px 12px;
+          border-radius: 4px;
+          font-size: 12px;
+          margin-bottom: 14px;
+        }
+        .login-submit {
+          width: 100%;
+          background: var(--accent, #2e6b93);
+          color: var(--on-accent, #ffffff);
+          border: none;
+          padding: 12px 16px;
+          border-radius: 4px;
+          font-size: 13.5px;
+          font-weight: 600;
+          cursor: pointer;
+          margin-top: 6px;
+        }
+        .login-submit:disabled { opacity: 0.6; cursor: default; }
+        .logout-btn {
+          background: none;
+          border: none;
+          color: var(--sb-text-faint, #6f9c95);
+          font-size: 11px;
+          cursor: pointer;
+          text-decoration: underline;
+          margin-top: 8px;
+          padding: 0;
+        }
+        .logout-btn:hover { color: var(--sb-text, #f0f9f7); }
       `}</style>
 
-      {/* Sidebar */}
+      {!isAuthenticated ? (
+        <div className="login-screen">
+          <div className="login-card">
+            <div className="login-brand">
+              <div className="login-brand-mark"><ShieldCheck size={18} /></div>
+              <div>
+                <div className="login-brand-name">Vigie</div>
+                <div className="login-brand-sub">Détection de fraude</div>
+              </div>
+            </div>
+            {loginError && <div className="login-error">{loginError}</div>}
+            <form onSubmit={handleLogin}>
+              <div className="login-field">
+                <label className="login-label">Identifiant</label>
+                <input
+                  type="text"
+                  className="login-input"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  autoComplete="username"
+                />
+              </div>
+              <div className="login-field">
+                <label className="login-label">Mot de passe</label>
+                <input
+                  type="password"
+                  className="login-input"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+              <button type="submit" className="login-submit" disabled={loginLoading}>
+                {loginLoading ? 'Connexion…' : 'Se connecter'}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : (
+        <>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><ShieldCheck size={18} /></div>
@@ -1044,11 +1510,11 @@ export default function App() {
             <div className="role-display">
               {ROLES.find(r => r.id === userRole)?.label || userRole}
             </div>
+            <button type="button" className="logout-btn" onClick={handleLogout}>Se déconnecter</button>
           </div>
         </div>
       </aside>
 
-      {/* Main */}
       <div className="main-col">
         <header className="topbar">
           <div>
@@ -1147,69 +1613,174 @@ export default function App() {
             </div>
           )}
 
+          {activeTab === 'dg' && (
+            <div>
+              <div className="section-head">
+                <h2 className="section-title">Indicateurs clés de performance</h2>
+                <p className="section-desc">Vue d'ensemble des métriques de fraude et transactions enregistrées.</p>
+              </div>
+              <IndicatorsView />
+            </div>
+          )}
+
           {activeTab === 'risk' && (
             <div>
               <div className="section-head">
                 <div className="section-title">Simulateur de score de risque</div>
-                <div className="section-desc">Renseignez les caractéristiques d'une transaction : le score se recalcule automatiquement à chaque modification.</div>
+                <div className="section-desc">Renseignez les caractéristiques d'une transaction, puis cliquez sur "Analyser" pour interroger le vrai modèle.</div>
               </div>
 
               <div className="risk-grid">
-                {/* Paramètres */}
                 <div className="risk-panel">
                   <div className="risk-panel-title">Paramètres de la transaction</div>
 
-                  <div className="field-group">
-                    <label className="field-label">Type de transaction</label>
-                    <select className="field-select" value={txType} onChange={(e) => setTxType(e.target.value)}>
-                      {TX_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
+                  <div className="sample-tx-block">
+                    <div className="sample-tx-head">
+                      <span>Charger une vraie transaction</span>
+                      <button type="button" className="icon-btn" onClick={loadSampleTransactions} disabled={samplesLoading}>
+                        {samplesLoading ? '…' : 'Charger'}
+                      </button>
+                    </div>
+                    {samplesError && (
+                      <p className="sample-tx-error">
+                        <AlertTriangle size={12} /> API indisponible ({samplesError}) — <code className="mono">GET {API_BASE_URL}/sample-transactions</code>
+                      </p>
+                    )}
+                    {sampleTransactions.length > 0 && (
+                      <div className="sample-tx-list">
+                        {sampleTransactions.map(tx => (
+                          <button
+                            type="button"
+                            key={tx.transaction_id}
+                            className={`sample-tx-row ${loadedTransaction?.transaction_id === tx.transaction_id ? 'active' : ''}`}
+                            onClick={() => applySampleTransaction(tx)}
+                          >
+                            <span className="mono">{tx.transaction_id}</span>
+                            <span className="mono">{tx.amount.toLocaleString('fr-FR')}</span>
+                            <span>{tx.merchant_category}</span>
+                            <span className={tx.is_fraud === 1 ? 'sample-tx-fraud' : 'sample-tx-ok'}>
+                              {tx.is_fraud === 1 ? 'fraude réelle' : 'légitime'}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {loadedTransaction && (
+                      <p className="sample-tx-loaded">
+                        Transaction <strong className="mono">{loadedTransaction.transaction_id}</strong> chargée — étiquette réelle en base : <strong>{loadedTransaction.is_fraud === 1 ? 'FRAUDULEUSE' : 'LÉGITIME'}</strong>.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="field-group model-field">
+                    <label className="field-label">Montant <span className="model-tag">colonne réelle</span></label>
+                    <input type="number" className="field-input" value={amount} onChange={(e) => { setAmount(e.target.value); setLoadedTransaction(null); }} />
+                  </div>
+
+                  <div className="demo-fields-note">
+                    Les 14 champs ci-dessous correspondent tous à de vraies colonnes de <code className="mono">bank_transactions_cleaned</code> et sont envoyés au vrai modèle.
                   </div>
 
                   <div className="field-row">
                     <div className="field-group">
-                      <label className="field-label">Montant</label>
-                      <input type="number" className="field-input" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                      <label className="field-label">Type de commerçant</label>
+                      <select className="field-select" value={merchantType} onChange={(e) => setMerchantType(e.target.value)}>
+                        {MERCHANT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
                     </div>
                     <div className="field-group">
-                      <label className="field-label">Solde initial expéditeur</label>
-                      <input type="number" className="field-input" value={oldBalanceOrig} onChange={(e) => setOldBalanceOrig(e.target.value)} />
+                      <label className="field-label">Devise</label>
+                      <select className="field-select" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                        {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
                     </div>
                   </div>
 
                   <div className="field-row">
                     <div className="field-group">
-                      <label className="field-label">Nouveau solde expéditeur</label>
-                      <input type="number" className="field-input" value={newBalanceOrig} onChange={(e) => setNewBalanceOrig(e.target.value)} />
+                      <label className="field-label">Pays</label>
+                      <select className="field-select" value={country} onChange={(e) => setCountry(e.target.value)}>
+                        {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
                     </div>
                     <div className="field-group">
-                      <label className="field-label">Solde initial destinataire</label>
-                      <input type="number" className="field-input" value={oldBalanceDest} onChange={(e) => setOldBalanceDest(e.target.value)} />
+                      <label className="field-label">Taille de ville</label>
+                      <select className="field-select" value={citySize} onChange={(e) => setCitySize(e.target.value)}>
+                        {CITY_SIZES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="field-row">
+                    <div className="field-group">
+                      <label className="field-label">Type de carte</label>
+                      <select className="field-select" value={cardType} onChange={(e) => setCardType(e.target.value)}>
+                        {CARD_TYPES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label">Appareil</label>
+                      <select className="field-select" value={device} onChange={(e) => setDevice(e.target.value)}>
+                        {DEVICES.map(d => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="field-row">
+                    <div className="field-group">
+                      <label className="field-label">Canal</label>
+                      <select className="field-select" value={channel} onChange={(e) => setChannel(e.target.value)}>
+                        {CHANNELS.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label">Vélocité (transactions dans l'heure précédente)</label>
+                      <input type="number" min="0" className="field-input" value={velocityLastHour} onChange={(e) => setVelocityLastHour(e.target.value)} />
                     </div>
                   </div>
 
                   <div className="field-group">
-                    <label className="field-label">Nouveau solde destinataire</label>
-                    <input type="number" className="field-input" value={newBalanceDest} onChange={(e) => setNewBalanceDest(e.target.value)} />
-                  </div>
-
-                  <div className="field-group">
-                    <label className="field-label">Heure de la journée (0h–23h)</label>
+                    <label className="field-label">Heure de la transaction (0h–23h)</label>
                     <div className="slider-row">
-                      <input type="range" min="0" max="23" value={hour} onChange={(e) => setHour(e.target.value)} className="slider" />
-                      <span className="slider-value mono">{hour}</span>
-                      <button type="button" className="icon-btn" onClick={() => setHour(3)} title="Réinitialiser"><RotateCcw size={13} /></button>
+                      <input type="range" min="0" max="23" value={transactionHour} onChange={(e) => setTransactionHour(e.target.value)} className="slider" />
+                      <span className="slider-value mono">{transactionHour}</span>
+                      <button type="button" className="icon-btn" onClick={() => setTransactionHour(12)} title="Réinitialiser"><RotateCcw size={13} /></button>
+                    </div>
+                  </div>
+
+                  <div className="field-row">
+                    <div className="field-group">
+                      <label className="field-label">Carte présente</label>
+                      <div className="radio-group">
+                        <label className={`radio-pill ${Number(cardPresent) === 0 ? 'checked' : ''}`}>
+                          <input type="radio" name="cardPresent" checked={Number(cardPresent) === 0} onChange={() => setCardPresent(0)} /> Non
+                        </label>
+                        <label className={`radio-pill ${Number(cardPresent) === 1 ? 'checked' : ''}`}>
+                          <input type="radio" name="cardPresent" checked={Number(cardPresent) === 1} onChange={() => setCardPresent(1)} /> Oui
+                        </label>
+                      </div>
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label">Week-end</label>
+                      <div className="radio-group">
+                        <label className={`radio-pill ${Number(weekendTransaction) === 0 ? 'checked' : ''}`}>
+                          <input type="radio" name="weekend" checked={Number(weekendTransaction) === 0} onChange={() => setWeekendTransaction(0)} /> Non
+                        </label>
+                        <label className={`radio-pill ${Number(weekendTransaction) === 1 ? 'checked' : ''}`}>
+                          <input type="radio" name="weekend" checked={Number(weekendTransaction) === 1} onChange={() => setWeekendTransaction(1)} /> Oui
+                        </label>
+                      </div>
                     </div>
                   </div>
 
                   <div className="field-group">
-                    <label className="field-label">Alerte système automatique (isFlaggedFraud)</label>
+                    <label className="field-label">Commerçant à risque élevé</label>
                     <div className="radio-group">
-                      <label className={`radio-pill ${Number(isFlagged) === 0 ? 'checked' : ''}`}>
-                        <input type="radio" name="flagged" checked={Number(isFlagged) === 0} onChange={() => setIsFlagged(0)} /> 0
+                      <label className={`radio-pill ${Number(highRiskMerchant) === 0 ? 'checked' : ''}`}>
+                        <input type="radio" name="highRisk" checked={Number(highRiskMerchant) === 0} onChange={() => setHighRiskMerchant(0)} /> Non
                       </label>
-                      <label className={`radio-pill ${Number(isFlagged) === 1 ? 'checked' : ''}`}>
-                        <input type="radio" name="flagged" checked={Number(isFlagged) === 1} onChange={() => setIsFlagged(1)} /> 1
+                      <label className={`radio-pill ${Number(highRiskMerchant) === 1 ? 'checked' : ''}`}>
+                        <input type="radio" name="highRisk" checked={Number(highRiskMerchant) === 1} onChange={() => setHighRiskMerchant(1)} /> Oui
                       </label>
                     </div>
                   </div>
@@ -1224,7 +1795,6 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Résultat */}
                 <div className="risk-panel">
                   <div className="risk-panel-title">Résultat du modèle</div>
 
@@ -1240,72 +1810,94 @@ export default function App() {
                         <label className="field-label">Score de risque (probabilité de fraude)</label>
                         <div className="score-value mono">{(apiResult.probability * 100).toFixed(2)}%</div>
                       </div>
+                      {loadedTransaction && loadedTransaction.amount === Number(amount) && (
+                        <div className={`ground-truth-note ${
+                          (loadedTransaction.is_fraud === 1 ? 'FRAUDULEUSE' : 'LÉGITIME') === apiResult.decision ? 'match' : 'mismatch'
+                        }`}>
+                          Étiquette réelle en base : <strong>{loadedTransaction.is_fraud === 1 ? 'FRAUDULEUSE' : 'LÉGITIME'}</strong> — {
+                            (loadedTransaction.is_fraud === 1 ? 'FRAUDULEUSE' : 'LÉGITIME') === apiResult.decision
+                              ? 'le modèle est d\'accord avec la vérité terrain.'
+                              : 'le modèle diverge de la vérité terrain sur cette transaction.'
+                          }
+                        </div>
+                      )}
                     </>
                   )}
 
-                  {apiError && (
-                    <div className="api-warning">
-                      <AlertTriangle size={14} />
-                      <span>API modèle indisponible ({apiError}) — <code className="mono">POST {API_BASE_URL}/predict-fraud</code> ne répond pas encore. Le résultat ci-dessous et les cartes du tableau de bord utilisent l'estimation locale en attendant.</span>
+                  {!apiError && !(apiResult && apiResult.source === 'api') && (
+                    <div className="placeholder-block" style={{ padding: '36px 20px' }}>
+                      <Gauge size={24} style={{ color: 'var(--text-faint)', margin: '0 auto 10px auto' }} />
+                      <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                        Cliquez sur "Analyser la transaction" pour interroger le vrai modèle.
+                      </p>
                     </div>
                   )}
 
-                  <div className="local-preview-head">
-                    Estimation locale (aperçu en temps réel)
-                  </div>
+                  {apiError && (
+                    <>
+                      <div className="api-warning">
+                        <AlertTriangle size={14} />
+                        <span>API modèle indisponible ({apiError}) — <code className="mono">POST {API_BASE_URL}/predict-fraud</code> ne répond pas. Résultat de secours ci-dessous, calculé localement (pas le vrai modèle).</span>
+                      </div>
 
-                  <div className="field-group">
-                    <label className="field-label">Décision estimée</label>
-                    <div className={`decision-badge subtle ${riskResult.decision === 'FRAUDULEUSE' ? 'danger' : 'success'}`}>
-                      {riskResult.decision}
-                    </div>
-                  </div>
+                      <div className="local-preview-head">
+                        Estimation locale (secours, API indisponible)
+                      </div>
 
-                  <div className="field-group">
-                    <label className="field-label">Score estimé</label>
-                    <div className="score-value mono">{(riskResult.probability * 100).toFixed(2)}%</div>
-                  </div>
-
-                  <div className="field-group">
-                    <label className="field-label">Niveau de risque</label>
-                    <div className={`level-badge ${riskResult.level === 'ÉLEVÉ' ? 'danger' : riskResult.level === 'MOYEN' ? 'warn' : 'success'}`}>
-                      <Circle size={7} fill="currentColor" stroke="none" /> {riskResult.level}
-                    </div>
-                  </div>
-
-                  <div className="waterfall-head">
-                    <Gauge size={13} /> Impact des variables — explication de l'estimation locale
-                  </div>
-                  <div className="waterfall">
-                    {riskResult.contributions.map((c) => {
-                      const maxAbs = Math.max(...riskResult.contributions.map(x => Math.abs(x.value)), 0.1);
-                      const widthPct = (Math.abs(c.value) / maxAbs) * 50;
-                      const positive = c.value >= 0;
-                      return (
-                        <div className="waterfall-row" key={c.name}>
-                          <div className="waterfall-label mono">{c.display}</div>
-                          <div className="waterfall-track">
-                            <div className="waterfall-mid" />
-                            <div
-                              className={`waterfall-bar ${positive ? 'pos' : 'neg'}`}
-                              style={{
-                                width: `${widthPct}%`,
-                                left: positive ? '50%' : `${50 - widthPct}%`,
-                              }}
-                            >
-                              <span className="waterfall-val mono">{positive ? '+' : ''}{c.value.toFixed(2)}</span>
-                            </div>
-                          </div>
+                      <div className="field-group">
+                        <label className="field-label">Décision estimée</label>
+                        <div className={`decision-badge subtle ${riskResult.decision === 'FRAUDULEUSE' ? 'danger' : 'success'}`}>
+                          {riskResult.decision}
                         </div>
-                      );
-                    })}
-                  </div>
+                      </div>
+
+                      <div className="field-group">
+                        <label className="field-label">Score estimé</label>
+                        <div className="score-value mono">{(riskResult.probability * 100).toFixed(2)}%</div>
+                      </div>
+
+                      <div className="field-group">
+                        <label className="field-label">Niveau de risque</label>
+                        <div className={`level-badge ${riskResult.level === 'ÉLEVÉ' ? 'danger' : riskResult.level === 'MOYEN' ? 'warn' : 'success'}`}>
+                          <Circle size={7} fill="currentColor" stroke="none" /> {riskResult.level}
+                        </div>
+                      </div>
+
+                      <div className="waterfall-head">
+                        <Gauge size={13} /> Impact des variables — explication de l'estimation locale
+                      </div>
+                      <div className="waterfall">
+                        {riskResult.contributions.map((c) => {
+                          const maxAbs = Math.max(...riskResult.contributions.map(x => Math.abs(x.value)), 0.1);
+                          const widthPct = (Math.abs(c.value) / maxAbs) * 50;
+                          const positive = c.value >= 0;
+                          return (
+                            <div className="waterfall-row" key={c.name}>
+                              <div className="waterfall-label mono">{c.display}</div>
+                              <div className="waterfall-track">
+                                <div className="waterfall-mid" />
+                                <div
+                                  className={`waterfall-bar ${positive ? 'pos' : 'neg'}`}
+                                  style={{
+                                    width: `${widthPct}%`,
+                                    left: positive ? '50%' : `${50 - widthPct}%`,
+                                  }}
+                                >
+                                  <span className="waterfall-val mono">{positive ? '+' : ''}{c.value.toFixed(2)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
               <div className="disclaimer-banner">
                 <Info size={15} />
-                <span><strong>Note :</strong> le bouton "Analyser la transaction" interroge <code className="mono">POST {API_BASE_URL}/predict-fraud</code>, censé charger votre modèle XGBoost depuis le registre MLflow. Tant que cette route n'existe pas côté backend, l'app retombe automatiquement sur une estimation locale par règles (clairement indiquée) — elle ne remplace pas le modèle entraîné.</span>
+                <span><strong>Note :</strong> le bouton "Analyser la transaction" envoie les 14 champs à <code className="mono">POST {API_BASE_URL}/predict-fraud</code>, qui reproduit le même encodage qu'à l'entraînement (via <code className="mono">model_columns.json</code>) avant d'interroger votre modèle XGBoost. L'estimation locale n'apparaît que si cette API ne répond pas, comme filet de secours clairement identifié — plus jamais affichée en permanence à côté du vrai résultat.</span>
               </div>
             </div>
           )}
@@ -1328,6 +1920,66 @@ export default function App() {
                 </div>
                 {uploadStatus && <p className="upload-status">{uploadStatus}</p>}
               </div>
+
+              <div className="section-head" style={{ marginTop: 28 }}>
+                <div className="section-title" style={{ fontSize: 15 }}>Documents indexés</div>
+                <div className="section-desc">Retirez un document si vous ne voulez plus que l'assistant s'appuie sur lui.</div>
+              </div>
+
+              {documentsError && (
+                <div className="api-warning">
+                  <AlertTriangle size={14} />
+                  <span>API indisponible ({documentsError}) — <code className="mono">GET {API_BASE_URL}/documents</code></span>
+                </div>
+              )}
+
+              {!documentsError && documents.length === 0 && (
+                <div className="placeholder-block" style={{ padding: '36px 20px' }}>
+                  <FileText size={24} style={{ color: 'var(--text-faint)', margin: '0 auto 10px auto' }} />
+                  <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Aucun document envoyé pour l'instant.</p>
+                </div>
+              )}
+
+              {documents.length > 0 && (
+                <div className="ledger">
+                  <div className="ledger-head">
+                    <span>{documents.length} document(s)</span>
+                  </div>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Fichier</th>
+                        <th>Taille</th>
+                        <th>Statut</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {documents.map(doc => (
+                        <tr key={doc.filename}>
+                          <td style={{ fontFamily: 'IBM Plex Sans' }}>{doc.filename}</td>
+                          <td>{(doc.size_bytes / 1024).toFixed(1)} Ko</td>
+                          <td>
+                            {doc.indexed
+                              ? <span className="sample-tx-ok">indexé</span>
+                              : <span style={{ color: 'var(--text-faint)' }}>non indexé (format non pris en charge)</span>}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn-resolve"
+                              onClick={() => removeDocument(doc.filename)}
+                              disabled={removingDoc === doc.filename}
+                            >
+                              {removingDoc === doc.filename ? '…' : 'Retirer'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -1335,33 +1987,77 @@ export default function App() {
             <div>
               <div className="section-head">
                 <div className="section-title">Alertes de fraude</div>
-                <div className="section-desc">Anomalies détectées automatiquement sur la fenêtre horaire active.</div>
+                <div className="section-desc">
+                  Surveillance simulée : de "nouvelles" transactions sont rejouées depuis l'historique et scorées automatiquement par le vrai modèle. Toute transaction jugée frauduleuse crée une alerte ici, sans action manuelle.
+                </div>
               </div>
-              <div className="placeholder-block">
-                <AlertTriangle size={28} style={{ color: 'var(--text-faint)', margin: '0 auto 12px auto' }} />
-                <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Aucune anomalie critique en attente</p>
-                <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Le module d'alertes surveille les flux en continu.</p>
-              </div>
-            </div>
-          )}
 
-          {activeTab === 'dg' && (
-            <div>
-              <div className="section-head">
-                <div className="section-title">Indicateurs décisionnels</div>
-                <div className="section-desc">Tendances financières et performance du dispositif anti-fraude.</div>
+              <div className="monitor-bar">
+                <button
+                  type="button"
+                  className={`btn-monitor ${liveMonitoring ? 'active' : ''}`}
+                  onClick={() => setLiveMonitoring(m => !m)}
+                >
+                  <span className={`monitor-dot ${liveMonitoring ? 'live' : ''}`} />
+                  {liveMonitoring ? 'Surveillance en cours — arrêter' : 'Démarrer la surveillance en direct'}
+                </button>
+                <div className="monitor-stats">
+                  <span><strong>{liveStats.processed}</strong> transactions analysées</span>
+                  <span className="monitor-stats-sep">·</span>
+                  <span className="monitor-stats-blocked"><strong>{liveStats.blocked}</strong> bloquées</span>
+                </div>
               </div>
-              <div className="placeholder-block">
-                <BarChart3 size={28} style={{ color: 'var(--text-faint)', margin: '0 auto 12px auto' }} />
-                <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Tableau de bord en préparation</p>
-                <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Les indicateurs clés s'afficheront ici une fois les données connectées.</p>
+
+              <div className="disclaimer-banner">
+                <Info size={15} />
+                <span><strong>Simulation, pas une vraie connexion bancaire :</strong> il n'existe aucun flux de transactions en direct réel ici — le bouton ci-dessus rejoue des lignes historiques au hasard toutes les 4 secondes, comme si elles venaient d'être soumises, pour démontrer le principe de blocage automatique.</span>
               </div>
+
+              {alertsError && (
+                <div className="api-warning" style={{ marginTop: 16 }}>
+                  <AlertTriangle size={14} />
+                  <span>API indisponible ({alertsError}) — <code className="mono">GET {API_BASE_URL}/alerts</code></span>
+                </div>
+              )}
+
+              {!alertsError && alerts.length === 0 && (
+                <div className="placeholder-block" style={{ marginTop: 16 }}>
+                  <AlertTriangle size={28} style={{ color: 'var(--text-faint)', margin: '0 auto 12px auto' }} />
+                  <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Aucune alerte pour l'instant</p>
+                  <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Démarrez la surveillance en direct pour en générer.</p>
+                </div>
+              )}
+
+              {alerts.length > 0 && (
+                <div className="alert-list">
+                  {alerts.map(a => (
+                    <div key={a.id} className={`alert-row ${a.status === 'Traitée' ? 'resolved' : ''}`}>
+                      <div className="alert-row-main">
+                        <span className="alert-badge">BLOQUÉE</span>
+                        <span className="mono alert-tx">{a.transaction_id}</span>
+                        <span className="mono alert-amount">{a.amount.toLocaleString('fr-FR')}</span>
+                        <span className="alert-score mono">{(a.probability * 100).toFixed(1)}%</span>
+                        <span className={a.is_fraud_real === 1 ? 'sample-tx-fraud' : 'sample-tx-ok'}>
+                          {a.is_fraud_real === 1 ? 'confirmée en base' : 'vérité terrain : légitime'}
+                        </span>
+                      </div>
+                      <div className="alert-row-side">
+                        <span className="alert-time">{new Date(a.created_at).toLocaleTimeString('fr-FR')}</span>
+                        {a.status === 'Traitée' ? (
+                          <span className="alert-status-done">Traitée</span>
+                        ) : (
+                          <button type="button" className="btn-resolve" onClick={() => resolveAlert(a.id)}>Marquer comme traité</button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Chat dock */}
       {isChatOpen && (
         <aside className="chat-dock">
           <div className="chat-head">
@@ -1394,6 +2090,8 @@ export default function App() {
             <button type="submit" className="chat-send"><Send size={15} /></button>
           </form>
         </aside>
+      )}
+        </>
       )}
     </div>
   );

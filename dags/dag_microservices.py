@@ -24,7 +24,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": 3600}, 
+        extra_options={"timeout": 7200}, 
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -48,7 +48,7 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": 3600},
+        extra_options={"timeout": 3600}, # Timeout de 1h ajusté pour le gros volume
         response_check=lambda response: response.status_code == 200,
     )
 
@@ -60,9 +60,9 @@ with DAG(
         method='POST',
         data="{}",
         headers={"Content-Type": "application/json"},
-        extra_options={"timeout": 1800}, # 5 min pour laisser le temps à XGBoost de calculer
+        extra_options={"timeout": 3600}, # Porté à 1h (3600s) pour éviter un timeout XGBoost
         response_check=lambda response: response.status_code == 200,
     )
 
-    # Ordre strict de ton pipeline d'ingénierie
+    # Ordre de dépendance des tâches
     task_extract >> task_transform >> task_load >> task_train

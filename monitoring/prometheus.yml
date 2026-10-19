@@ -2,6 +2,7 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
+  # 1. Vos microservices FastAPI
   - job_name: 'fastapi_microservices'
     metrics_path: '/metrics'
     static_configs:
@@ -9,3 +10,18 @@ scrape_configs:
           - 'extract-service:8000'
           - 'transform-service:8000'
           - 'load-service:8000'
+
+  # 2. Métriques CPU/RAM/Réseau des conteneurs
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # 3. Métriques de la machine hôte
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # 4. Métriques de la base PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']

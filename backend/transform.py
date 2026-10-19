@@ -4,16 +4,18 @@ import pandas as pd
 import numpy as np
 import psycopg2
 from sqlalchemy import create_engine
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
 from xgboost import XGBClassifier  
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc
 import matplotlib.pyplot as plt
 import mlflow  # Package officiel de tracking
 import mlflow.xgboost  # Extension XGBoost officielle
 from fastapi import FastAPI, HTTPException
 import uvicorn
+import json
 import traceback
-from imblearn.combine import SMOTETomek  # Pour surmonter le déséquilibre extrême
+from imblearn.over_sampling import SMOTE  # Plus rapide que SMOTETomek sur gros volumes
+from imblearn.pipeline import Pipeline as ImbPipeline
 from prometheus_fastapi_instrumentator import Instrumentator
 
 import matplotlib
@@ -30,7 +32,8 @@ class DataTransformer:
 
     def _anonymize_card(self, card_number) -> str:
         if pd.notnull(card_number):
-            salt = os.getenv("HASH_SALT", "SecretKey123").encode('utf-8')
+            # Utilisation directe de os.environ pour lever une KeyError si HASH_SALT est manquant
+            salt = os.environ["HASH_SALT"].encode('utf-8')
             return hashlib.sha256(str(card_number).encode('utf-8') + salt).hexdigest()
         return None
 
@@ -92,20 +95,6 @@ class DataTransformer:
                 is_first_chunk = False
         return self.cleaned_path
 
-    def run_pipeline(self) -> str:
-        if not os.path.exists(self.raw_path):
-            print(f"[WARNING] Fichier brut {self.raw_path} non trouvé. Étape ignorée.")
-            return None
-        if os.path.exists(self.cleaned_path):
-            os.remove(self.cleaned_path)
-            
-        is_first_chunk = True
-        for chunk in pd.read_csv(self.raw_path, chunksize=self.chunk_size):
-            cleaned_chunk = self.clean_chunk(chunk)
-            if not cleaned_chunk.empty:
-                cleaned_chunk.to_csv(self.cleaned_path, mode='a', index=False, header=is_first_chunk)
-                is_first_chunk = False
-        return self.cleaned_path
 
 # =====================================================================
 # CLASSE: Gestionnaire de Base de Données (PostgreSQL)
@@ -129,103 +118,134 @@ class DatabaseManager:
             raise
 
     def read_table(self, query):
-        if self.engine is None: self.connect()
-        return pd.read_sql(query, self.engine)
-
-    def load_csv_chunks(self, csv_path: str, table_name: str, chunk_size: int = 100000):
-        """Vide la table cible et injecte un fichier CSV par blocs (chunks) pour optimiser la mémoire RAM."""
         if self.engine is None: 
             self.connect()
+        conn = self.engine.raw_connection()
+        try:
+            return pd.read_sql(str(query), con=conn)
+        finally:
+            conn.close()
 
+    def load_csv_chunks(self, csv_path: str, table_name: str, chunk_size: int = 100000):
+        if self.engine is None: 
+            self.connect()
         print(f"[INFO] Nettoyage (TRUNCATE) de la table public.{table_name}...")
         with self.engine.begin() as conn:
-            conn.execute(f"TRUNCATE TABLE public.{table_name} RESTART IDENTITY CASCADE;")
+            conn.exec_driver_sql(f"TRUNCATE TABLE public.{table_name} RESTART IDENTITY CASCADE;")
 
-        print(f"[INFO] Début de l'injection de {csv_path} dans la table public.{table_name}...")
-        for i, chunk in enumerate(pd.read_csv(csv_path, chunksize=chunk_size)):
-            # Nettoyage uniforme des noms de colonnes
-            chunk.columns = chunk.columns.str.strip().str.lower().str.replace('"', '')
-            
-            # Injection par blocs
-            chunk.to_sql(table_name, self.engine, if_exists='append', index=False)
-            print(f"[INFO] Bloc {i + 1} inséré avec succès ({len(chunk)} lignes).")
-
-
-# =====================================================================
-# CLASSE: Entraîneur de Modèle (XGBoost + SMOTE-Tomek + MLflow)
-# =====================================================================
+        print(f"[INFO] Début de l injection de {csv_path} dans la table public.{table_name}...")
+        with self.engine.begin() as conn:
+            for i, chunk in enumerate(pd.read_csv(csv_path, chunksize=chunk_size)):
+                chunk.columns = chunk.columns.str.strip().str.lower().str.replace('"', '')
+                chunk.to_sql(table_name, con=conn, if_exists='append', index=False)
+                print(f"[INFO] Bloc {i + 1} inséré avec succès ({len(chunk)} lignes).")
 class ModelTrainer:
     def __init__(self, dataframe, target="is_fraud"):
         self.dataframe = dataframe
         self.target = target
-        
-        # CONFIGURATION DES HYPERPARAMÈTRES OPTIMISÉS
-        self.params = {
-            "n_estimators": 800,           
-            "max_depth": 7,                
-            "learning_rate": 0.03,         # Baissé à 0.03 pour affiner la convergence avec SMOTE
-            "subsample": 0.8,              
-            "colsample_bytree": 0.8,       
-            "eval_metric": "aucpr",        # Focus sur la courbe Précision-Rappel
-            "random_state": 42
-        }
-        self.model = XGBClassifier(**self.params, early_stopping_rounds=50)
+        self.model = None
 
     def prepare_data(self):
-        X = self.dataframe.select_dtypes(include=['number']).drop(columns=[self.target], errors='ignore')
+        X = self.dataframe.drop(columns=[self.target], errors='ignore')
+        X = pd.get_dummies(X, drop_first=True)
+        X = X.astype(np.float32)
         y = self.dataframe[self.target].astype(int)
         return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
     def log_mlflow(self):
-        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_proxy:5000")
         mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment("Detection_Fraude_Financial")
+        mlflow.set_experiment("Fraud_Detection_Pipeline")
 
         X_train, X_test, y_train, y_test = self.prepare_data()
+        model_columns = X_train.columns.tolist()
 
-        # APPLICATION DE SMOTE-TOMEK
-        print("[INFO] Application de SMOTE-Tomek sur le dataset d'entraînement...")
-        smt = SMOTETomek(random_state=42)
-        X_train_res, y_train_res = smt.fit_resample(X_train, y_train)
+        pipeline = ImbPipeline([
+            ('resample', SMOTE(random_state=42)),
+            ('clf', XGBClassifier(eval_metric='aucpr', random_state=42, n_jobs=1)),
+        ])
+
+        param_distributions = {
+            'resample__sampling_strategy': [0.3, 0.5, 0.7, 1.0],
+            'clf__n_estimators': [300, 500, 800],
+            'clf__max_depth': [6, 8, 10],
+            'clf__learning_rate': [0.01, 0.03, 0.05, 0.1],
+            'clf__subsample': [0.7, 0.8, 0.9],
+            'clf__colsample_bytree': [0.6, 0.7, 0.8],
+            'clf__min_child_weight': [1, 2, 3],
+            'clf__gamma': [0, 0.1, 0.2],
+            'clf__scale_pos_weight': [1, 3, 5]
+        }
+
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+        print("[INFO] Recherche d'hyperparamètres en cours...")
+        search = RandomizedSearchCV(
+            pipeline,
+            param_distributions=param_distributions,
+            n_iter=12,
+            scoring='f1',
+            cv=cv,
+            n_jobs=-1,
+            random_state=42,
+            verbose=1,
+            refit=True,
+        )
+        search.fit(X_train, y_train)
+
+        self.model = search.best_estimator_.named_steps['clf']
 
         with mlflow.start_run(run_name="Entrainement_XGBoost_Haute_Precision"):
-            mlflow.log_params(self.params)
-            
-            self.model.fit(
-                X_train_res, y_train_res,
-                eval_set=[(X_test, y_test)],
-                verbose=False
-            )
-            
-            y_pred = self.model.predict(X_test)
-            y_pred_proba = self.model.predict_proba(X_test)[:, 1]
-            
-            f1 = f1_score(y_test, y_pred, average='binary')
-            accuracy = accuracy_score(y_test, y_pred)
-            
-            mlflow.log_metric("f1_score", f1)
-            mlflow.log_metric("accuracy", accuracy)
-            mlflow.set_tag("Statut", "Pipeline_Production_Valide")
-            
-            # --- GÉNÉRATION ET ENVOI DES GRAPHES VERS ARTIFACTS ---
-            try:
-                cm_path = "/tmp/confusion_matrix.png"
-                roc_path = "/tmp/roc_curve.png"
+            mlflow.log_params({f"best_{k}": v for k, v in search.best_params_.items()})
+            mlflow.log_metric("cv_best_f1", search.best_score_)
 
-                # 1. Matrice de Confusion
+            y_pred_proba = self.model.predict_proba(X_test)[:, 1]
+
+            meilleur_seuil = 0.5
+            meilleur_f1 = 0.0
+            for threshold in np.arange(0.1, 0.9, 0.02):
+                y_pred_temp = (y_pred_proba >= threshold).astype(int)
+                score = f1_score(y_test, y_pred_temp, pos_label=1)
+                if score > meilleur_f1:
+                    meilleur_f1 = score
+                    meilleur_seuil = threshold
+
+            y_pred = (y_pred_proba >= meilleur_seuil).astype(int)
+
+            mlflow.log_param("best_threshold", round(meilleur_seuil, 2))
+            mlflow.log_metric("f1_score", meilleur_f1)
+            mlflow.log_metric("accuracy", accuracy_score(y_test, y_pred))
+            mlflow.log_metric("precision", precision_score(y_test, y_pred, pos_label=1, zero_division=0))
+            mlflow.log_metric("recall", recall_score(y_test, y_pred, pos_label=1, zero_division=0))
+            mlflow.set_tag("Statut", "Pipeline_Production_Valide")
+
+            # 1. Sauvegarde locale dans shared_data pour FastAPI / Inférence
+            os.makedirs("/data", exist_ok=True)
+            self.model.save_model("/data/fraud_model.json")
+            with open("/data/model_columns.json", "w") as f:
+                json.dump(model_columns, f)
+            with open("/data/threshold.json", "w") as f:
+                json.dump({"threshold": round(float(meilleur_seuil), 4)}, f)
+
+            # 2. Enregistrement direct dans MLflow via l'API native (mémoire/HTTP)
+            mlflow.log_dict({"threshold": round(float(meilleur_seuil), 4)}, "threshold.json")
+            mlflow.log_dict(model_columns, "model_columns.json")
+            mlflow.xgboost.log_model(self.model, artifact_path="model")
+
+            # 3. Génération et enregistrement des graphiques
+            try:
                 plt.figure(figsize=(6, 6))
                 cm = confusion_matrix(y_test, y_pred)
                 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Fraude'])
                 disp.plot(cmap='Blues', values_format='d')
                 plt.title("Matrice de Confusion Optimisée")
+                cm_path = "/tmp/confusion_matrix.png"
                 plt.savefig(cm_path, bbox_inches='tight')
-                mlflow.log_artifact(cm_path)
                 plt.close()
+                mlflow.log_artifact(cm_path)
 
-                # 2. Courbe ROC
                 plt.figure(figsize=(6, 5), dpi=300)
                 fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
-                roc_auc = auc(fpr, tpr)
                 plt.plot(fpr, tpr, color="#ff8c00", lw=2.5) 
                 plt.plot([0, 1], [0, 1], color="#000080", lw=2, linestyle="--")
                 plt.xlim([0.0, 1.0])
@@ -233,23 +253,18 @@ class ModelTrainer:
                 plt.title("Courbe ROC - Version Haute Précision", fontsize=12, pad=10)
                 plt.xlabel("Taux de Faux Positifs", fontsize=11)
                 plt.ylabel("Taux de Vrais Positifs", fontsize=11)
-                plt.grid(False)
-                
-            
-                plt.tight_layout()
+                roc_path = "/tmp/roc_curve.png"
                 plt.savefig(roc_path, bbox_inches='tight')
-                mlflow.log_artifact(roc_path)
                 plt.close()
-                print("[INFO] Graphiques sauvegardés dans /tmp/ et transmis à MLflow.")
+                mlflow.log_artifact(roc_path)
             except Exception as graph_err:
                 print(f"[CRITICAL ERROR GRAPHES] Erreur : {graph_err}")
-                traceback.print_exc()
-
 # =====================================================================
 # SERVICE API (FastAPI)
 # =====================================================================
 app = FastAPI(title="ML Modeling Microservice")
 Instrumentator().instrument(app).expose(app)
+
 @app.post("/load-raw")
 def load_raw():
     """Déclenche l'import direct du CSV brut dans la table public.bank_transactions."""
@@ -329,23 +344,48 @@ def train_only():
             password="postgres"
         )
         
-        # Lecture depuis la table nettoyée
         query = """
             SELECT * FROM public.bank_transactions_cleaned 
+            ORDER BY transaction_id
             LIMIT 150000;
         """
         print("[INFO] Lecture globale des données propres chargées dans PostgreSQL...")
         df_raw = db.read_table(query)
         
         df_raw.columns = df_raw.columns.str.replace('"', '').str.strip().str.lower()
-        
-        features_list = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour', 'is_fraud']
-        
+
+        if 'customer_id' in df_raw.columns and 'timestamp' in df_raw.columns:
+            print("[INFO] Calcul réel de velocity_last_hour (fenêtre glissante de 1h par client)...")
+            df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'])
+            df_raw = df_raw.sort_values(['customer_id', 'timestamp'])
+            df_raw = df_raw.set_index('timestamp')
+            df_raw['velocity_last_hour'] = (
+                df_raw.groupby('customer_id')['amount']
+                .rolling('1h', closed='left')
+                .count()
+                .reset_index(level=0, drop=True)
+            )
+            df_raw = df_raw.reset_index()
+            print(f"[INFO] velocity_last_hour calculée — exemple de distribution : {df_raw['velocity_last_hour'].describe().to_dict()}")
+        else:
+            print("[WARNING] customer_id ou timestamp absent : velocity_last_hour restera à 0.")
+
+        numeric_features = ['amount', 'high_risk_merchant', 'transaction_hour', 'weekend_transaction', 'velocity_last_hour', 'card_present']
+        categorical_features = ['merchant_type', 'card_type', 'device', 'channel', 'country', 'city_size', 'currency']
+        features_list = numeric_features + categorical_features + ['is_fraud']
+
         df = df_raw[[col for col in features_list if col in df_raw.columns]].copy()
         print(f"[INFO] Colonnes récupérées avec succès : {list(df.columns)}")
-        
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        for col in numeric_features:
+            if col in df.columns:
+                if col == 'card_present':
+                    df[col] = df[col].astype(bool).astype(int)
+                else:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        for col in categorical_features:
+            if col in df.columns:
+                df[col] = df[col].fillna('unknown').astype(str)
         
         trainer = ModelTrainer(df, target="is_fraud")
         trainer.log_mlflow()

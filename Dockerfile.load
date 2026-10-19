@@ -2,12 +2,12 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Installation des dépendances
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir fastapi uvicorn pandas psycopg2-binary
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY backend/load.py /app/load.py
 

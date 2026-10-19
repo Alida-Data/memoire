@@ -5,7 +5,7 @@ sqlalchemy
 fastapi
 uvicorn
 scikit-learn
-mlflow
+mlflow==2.11.3
 apache-airflow
 apache-airflow-providers-http
 starlette<1.0.0
@@ -22,4 +22,5 @@ minio
 qdrant-client
 pypdf
 google-cloud-storage
-prometheus-fastapi-instrumentator>=6.0.0
+prometheus-fastapi-instrumentator
+kagglehub

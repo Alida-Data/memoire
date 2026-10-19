@@ -2,8 +2,10 @@ import os
 import pandas as pd
 import psycopg2
 from psycopg2 import extras
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel
 from prometheus_fastapi_instrumentator import Instrumentator
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 class PostgresLoader:
@@ -43,7 +45,6 @@ class PostgresLoader:
             elif col in ['date_heure_proper', 'timestamp']:
                 schema.append(f'"{col}" TIMESTAMP')
             else:
-                # SÉCURITÉ ABSOLUE : Tout le reste passe en TEXT
                 schema.append(f'"{col}" TEXT')
         return schema
 
@@ -52,7 +53,6 @@ class PostgresLoader:
         first_row = pd.read_csv(file_path, nrows=1)
         schema = self._generate_schema(first_row)
         
-        # Le DROP TABLE garantit que l'espace disque est libéré à chaque exécution du DAG !
         self.cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
         create_query = f"CREATE TABLE {table_name} ({', '.join(schema)});"
         self.cursor.execute(create_query)
@@ -64,28 +64,22 @@ class PostgresLoader:
         print(f"[INFO] Insertion massive dans {table_name} par paquets de {chunk_size}...")
         
         for chunk in pd.read_csv(file_path, chunksize=chunk_size):
-            
-            # SÉCURITÉ : Supprimer la colonne parasite si elle est présente
             for col in chunk.columns:
                 if chunk[col].astype(str).str.contains('num_transactions').any():
                     print(f"[WARNING] Colonne parasite détectée et supprimée : {col}")
                     chunk = chunk.drop(columns=[col])
             
-            # Cast explicite des booléens/entiers
             cols_to_cast = ['high_risk_merchant', 'weekend_transaction', 'is_fraud']
             for col in cols_to_cast:
                 if col in chunk.columns:
                     chunk[col] = chunk[col].astype(bool).astype(int)
             
-            # Gestion des valeurs NaN/Null
             chunk = chunk.where(pd.notnull(chunk), None)
             
-            # Reconstruction des colonnes et placeholders
             columns_list = list(chunk.columns)
             protected_cols = ",".join([f'"{c}"' for c in columns_list])
             values_placeholder = ",".join([f"%({c})s" for c in columns_list])
             
-            # 💡 SÉCURITÉ CONFLICT : On n'applique le ON CONFLICT que si la clé primaire est présente dans ce CSV
             if 'transaction_id' in columns_list:
                 conflict_clause = "ON CONFLICT (transaction_id) DO NOTHING"
             else:
@@ -127,7 +121,18 @@ class PostgresLoader:
 # =====================================================================
 
 app = FastAPI(title="Load Microservice")
+
+# Integration du middleware CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 Instrumentator().instrument(app).expose(app)
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
     "postgresql://postgres:postgres@postgres_memoire:5432/memoire"
@@ -137,10 +142,49 @@ CLEAN_DATA_PATH = os.getenv("CLEAN_DATA_PATH", "/data/cleaned_data.csv")
 
 db_loader = PostgresLoader(db_url=DATABASE_URL)
 
+
+# Modèles Pydantic
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+# =====================================================================
+# Endpoints de l'API
+# =====================================================================
+
+@app.get("/")
+def read_root():
+    return {"status": "ok", "service": "Load Microservice"}
+
+@app.post("/api/v1/login")
+def login(credentials: LoginRequest):
+    # Logique d'authentification basique pour débloquer le frontend
+    if credentials.username:
+        return {
+            "access_token": "token_vigie_123456",
+            "token_type": "bearer",
+            "user": {
+                "username": credentials.username,
+                "role": "analyst"
+            }
+        }
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Identifiants invalides"
+    )
+
+@app.get("/api/v1/dashboard-stats")
+def get_dashboard_stats():
+    return {
+        "total_transactions": 10500,
+        "fraud_detected": 128,
+        "pending_reviews": 12
+    }
+
 @app.post("/run")
 def load():
     try:
-        # 1. Chargement de la table brute (Bronze)
         print("[PROCESS] Lancement du chargement des données BRUTES...")
         db_loader.run_pipeline(
             file_path=RAW_DATA_PATH, 
@@ -148,7 +192,6 @@ def load():
             chunk_size=50000
         )
         
-        # 2. Chargement de la table propre (Silver)
         print("[PROCESS] Lancement du chargement des données PROPRES...")
         db_loader.run_pipeline(
             file_path=CLEAN_DATA_PATH, 
